@@ -2,6 +2,9 @@
 .venv/
 venv/
 
+# Solver cache: solved spots, regenerated on demand (python -m preflop_hud.solver precomputes them)
+data/solutions/
+
 # Python bytecode caches
 __pycache__/
 *.py[cod]
