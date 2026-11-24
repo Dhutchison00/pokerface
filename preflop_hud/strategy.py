@@ -173,7 +173,7 @@ class Engine:
                 from .solved import SolvedCharts
                 self.solved = SolvedCharts()
             try:
-                ch, status = self.solved.chart(spot)
+                ch, status = self.solved.chart(spot, getattr(self, "game", None))
             except Exception as e:  # never lose the chart because of the solver
                 ch, status = None, f"solver error: {type(e).__name__}: {e}"
             if ch is not None:

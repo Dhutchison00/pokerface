@@ -214,6 +214,58 @@ to the read time. A full table read takes about 0.2 s on an RTX 5070 Ti against 
 - Lines like `No registered plugin EP device found for 'CUDAExecutionProvider'` at start-up are
   onnxruntime noise. Trust the `OCR device:` line.
 
+## Tournament or cash
+
+The **Tournament / Cash** switch at the top of the page picks the game type. It's saved in
+`config.json` under `"game"` and re-solves the current spot at once.
+
+| Mode | What changes |
+|---|---|
+| Tournament · Chip EV | The default: antes read from the pot, every chip worth the same |
+| Tournament · ICM stage | Final table, two tables, 10% left, bubble or half the field (payouts of a 1,000-player event, 15% paid). Only GTOpen charts solved for that stage are ICM-aware. The HUD's own solver has no ICM, so other spots show chip EV with a note |
+| Cash | Rake taken from pots that see a flop (`"rake_pct"` 5, `"rake_cap"` 3 bb by default), 2.5 bb opens and 3 bb from the SB. Usually no antes |
+
+Each mode has its own solver cache (`data/solutions/v2_cash_r5c3_…` for cash) and its own GTOpen
+exports, so switching never mixes charts. To precompute cash charts with the HUD's solver, run
+`python -m preflop_hud.solver --mode cash --players 6 --stacks 100`.
+
+## GTOpen preflop charts (optional)
+
+[GTOpen](https://github.com/MatthewPDingle/GTOpen) solves the full multiway preflop tree (squeezes,
+sized 3-bets, blockers) on an NVIDIA GPU, with flop values learned from exact flop solves. That
+takes minutes per grid point, or hours with limps, so it runs offline. The HUD then reads the
+exported charts from `data/gtopen/` and shows them with a **GTOpen** badge. Anything not exported
+falls back to the HUD's own solver. GTOpen charts have no per-hand EVs.
+
+Build GTOpen once (needs Rust and the Visual Studio C++ build tools), then point the HUD at it with
+`--gtopen-dir`, the `HUD_GTOPEN_DIR` environment variable or `"gtopen_dir"` in `config.json`:
+
+Clone to a short path: the repository's research files exceed Windows' 260-character limit otherwise.
+
+```powershell
+git -c core.longpaths=true clone https://github.com/MatthewPDingle/GTOpen.git C:\GTOpen; cd C:\GTOpen
+python -m pip install --target .cuda-nvrtc nvidia-cuda-nvrtc-cu12
+cargo build --release -p server --features gpu
+```
+
+| Command | What it does |
+|---|---|
+| `python -m preflop_hud.gtopen solve --players 8 --stack 60 --limp` | Solve one grid point, saving a checkpoint every 100 iterations; rerun the same command to resume. Exports when done |
+| `python -m preflop_hud.gtopen export --players 8 --stack 60 --limp` | Export a finished save to `data/gtopen/` |
+| `python -m preflop_hud.gtopen compare --players 8 --stack 60 --limp` | Print every exported spot next to the HUD solver's |
+
+- `--stack` is one of the HUD's grid depths. Antes default to 0.125 bb per player in tournaments and
+  0 in cash (`--ante-per-player`). A chart is used when the table size, grid stack and game type match
+  and the antes are within 0.5 bb.
+- Game type: `--mode cash` (with `--rake-pct` / `--rake-cap`) or `--icm-stage ft|t2|pct10|bubble|pct50`.
+  ICM games use GTOpen's plain "balanced" flop values without blockers: its learned values and blocker
+  model don't support ICM.
+- **Limps.** GTOpen can only allow limping for every seat, not just the small blind as the HUD's tree
+  does. Without `--limp`, the small blind's first-in and the lines it opens stay with the HUD's
+  solver. With `--limp` those come from GTOpen too, but the tree is roughly 7–15× larger (8-handed
+  60 bb: 1.65M nodes, about 6 s per iteration on an RTX 5070 Ti).
+- The checkpoints and logs live in GTOpen's `saves/preflop/` folder.
+
 ## Troubleshooting
 
 - **`DLL load failed ... filename or extension is too long`** when importing onnxruntime: the

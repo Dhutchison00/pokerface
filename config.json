@@ -1,8 +1,14 @@
 {
   "region": {
-    "left": 8,
-    "top": 56,
-    "width": 1898,
-    "height": 1269
+    "left": 12,
+    "top": 59,
+    "width": 1930,
+    "height": 1304
+  },
+  "game": {
+    "mode": "tournament",
+    "icm_stage": null,
+    "rake_pct": 5.0,
+    "rake_cap": 3.0
   }
 }

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 
@@ -285,12 +286,16 @@ class Tree:
 
     def _finalise(self):
         D, n = self.dead, self.n
+        rake_pct, rake_cap = self.p.get("rake_pct", 0.0) / 100.0, self.p.get("rake_cap", 0.0)
         for nd in self.nodes:
             if nd["kind"] == "dec":
                 continue
             inv = nd["inv"]
             assert np.all(inv <= self.stacks + 1e-9), ("investment above stack", nd)
             nd["pot"] = D + inv.sum()
+            if rake_pct and nd["kind"] != "win":
+                # cash rake, "no flop no drop": only pots that see a flop or a showdown are raked
+                nd["pot"] -= min(rake_pct * nd["pot"], rake_cap if rake_cap > 0 else np.inf)
             if nd["kind"] != "win":
                 S = nd["S"]
                 assert S.min() >= -1e-12 and S.max() <= 1 + 1e-12
@@ -480,13 +485,13 @@ class CFR:
         return out
 
 
-def live_jamfold(stacks, posted, dead, iters=250):
+def live_jamfold(stacks, posted, dead, iters=250, params=None):
     """Jam/fold equilibrium for the players still in, using their real stacks.
 
     stacks/posted are in action order starting with the first player to act
-    (everyone earlier has folded).  Returns (tree, cfr)."""
+    (everyone earlier has folded).  params: DEFAULT_PARAMS overrides (rake).  Returns (tree, cfr)."""
     n = len(stacks)
-    t = Tree(n, stacks, dead, jamfold_only=True, posted=posted)
+    t = Tree(n, stacks, dead, params, jamfold_only=True, posted=posted)
     c = CFR(t)
     c.iterate(iters)
     return t, c
@@ -552,8 +557,11 @@ class SolverStore:
     """Finds the solved grid point for (players, effective stack, antes); solves
     missing ones in a background thread (one at a time) and caches them on disk."""
 
-    def __init__(self, iters=600):
+    def __init__(self, iters=600, params=None, tag="default"):
+        """params: overrides of DEFAULT_PARAMS (cash sizes, rake); tag names their cache files."""
         self.iters = iters
+        self.params = params or None
+        self.tag = tag
         self._cache = {}
         self._queue = []
         self._busy = None
@@ -577,7 +585,7 @@ class SolverStore:
         key = (n, s, d)
         if key in self._cache:
             return self._cache[key], None
-        path = sol_path(n, s, d)
+        path = sol_path(n, s, d, self.tag)
         if os.path.exists(path):
             sol = Solution(path)
             self._cache[key] = sol
@@ -604,7 +612,8 @@ class SolverStore:
                 self._busy = key
             try:
                 n, s, d = key
-                solve_and_save(n, s, d, iters=self.iters, verbose=False)
+                solve_and_save(n, s, d, iters=self.iters, params=self.params, params_tag=self.tag,
+                               verbose=False)
             except Exception as e:  # keep serving fallback charts
                 self.last_error = f"{type(e).__name__}: {e}"
 
@@ -616,11 +625,20 @@ if __name__ == "__main__":
     ap.add_argument("--stacks", type=int, nargs="+", default=STACK_GRID)
     ap.add_argument("--ante-per-player", type=float, default=0.125, help="ante in bb per player")
     ap.add_argument("--iters", type=int, default=600)
+    ap.add_argument("--mode", choices=["tournament", "cash"], default="tournament",
+                    help="cash: 2.5bb opens and rake (antes default to 0)")
+    ap.add_argument("--rake-pct", type=float, default=5.0)
+    ap.add_argument("--rake-cap", type=float, default=3.0)
     a = ap.parse_args()
+    from preflop_hud import modes
+    game = {"mode": a.mode, "rake_pct": a.rake_pct, "rake_cap": a.rake_cap}
+    params, tag = modes.solver_params(game), modes.solver_tag(game)
+    if a.mode == "cash" and "--ante-per-player" not in sys.argv:
+        a.ante_per_player = 0.0
     for n in a.players:
         dead = SolverStore.dead_key(a.ante_per_player * n)
         for s in a.stacks:
             t0 = time.time()
-            path, meta = solve_and_save(n, s, dead, iters=a.iters, verbose=False)
+            path, meta = solve_and_save(n, s, dead, iters=a.iters, params=params, params_tag=tag, verbose=False)
             print(f"{n}-handed {s:3d}bb ante {dead}: max BR gain {max(meta['br_gain']):.4f} bb, "
                   f"{meta['iters']} iters, {time.time() - t0:.0f}s -> {os.path.basename(path)}", flush=True)

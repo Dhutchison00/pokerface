@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
 
+from . import modes
 from .cards import hole_cards_to_class, HAND_INDEX
 from .overrides import Overrides
 from . import reader as reader_mod
@@ -70,6 +71,11 @@ class App:
         self.image = image
         self.interval = interval or float(self.cfg.get("interval", 0.5))
         self.engine = Engine()
+        try:
+            self.engine.game = modes.normalize(self.cfg.get("game"))
+        except ValueError as e:
+            print(f"config.json 'game' ignored: {e}", file=sys.stderr)
+            self.engine.game = modes.normalize(None)
         self.overrides = Overrides(os.path.join(ROOT, "ranges"))
         self.lock = threading.Lock()
         self.paused = False
@@ -204,12 +210,29 @@ class App:
                 new.pop("error", None)
             new.update(update)
             new["paused"] = self.paused
+            new["game"] = dict(self.engine.game, label=modes.describe(self.engine.game),
+                               stages={k: v[0] for k, v in modes.ICM_STAGES.items()})
             new["region"] = self.cfg.get("region")
             new["image_mode"] = bool(self.image)
             new["updated"] = time.time()
             self.version += 1
             new["version"] = self.version
             self.state = _jsonable(new)
+
+    # ------------------------------------------------------------ game mode
+    def set_game(self, update):
+        """Switch tournament/cash or the ICM stage; saved in config.json and applied at once."""
+        game = modes.normalize(dict(self.engine.game, **(update or {})))
+        self.engine.game = game
+        self.cfg["game"] = {k: v for k, v in game.items()}
+        save_config(self.cfg)
+        data = self._last_data
+        if data is not None:
+            self._accepted = None             # the chart depends on the mode: re-solve the current spot
+            self._accept(data, force=True)
+        else:
+            self._publish({}, keep_chart=True)
+        return {"ok": True, "game": game, "label": modes.describe(game)}
 
     # ------------------------------------------------------------ region picker
     def select_region(self):
@@ -275,6 +298,14 @@ def make_handler(app: App):
                 app.paused = not app.paused
                 app._publish({"status": "paused" if app.paused else "live"}, keep_chart=True)
                 self._send(200, json.dumps({"paused": app.paused}).encode(), "application/json")
+            elif path == "/api/game":
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                    res = app.set_game({k: body[k] for k in ("mode", "icm_stage") if k in body})
+                    self._send(200, json.dumps(res).encode(), "application/json")
+                except (ValueError, TypeError) as e:
+                    self._send(400, json.dumps({"ok": False, "error": str(e)}).encode(), "application/json")
             else:
                 self._send(404, b"not found", "text/plain")
 

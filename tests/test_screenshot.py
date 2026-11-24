@@ -12,6 +12,8 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import tempfile  # noqa: E402
+os.environ["HUD_GTOPEN_CHARTS"] = tempfile.mkdtemp()   # local GTOpen exports must not change these results
 
 from preflop_hud.reader import read_table          # noqa: E402
 from preflop_hud.spot import derive_spot           # noqa: E402
