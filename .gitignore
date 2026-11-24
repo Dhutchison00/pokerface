@@ -1,0 +1,7 @@
+# Python virtual environment (recreated by start.bat / setup_gpu.bat; ~1.5 GB with CUDA)
+.venv/
+venv/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]

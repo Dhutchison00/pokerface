@@ -1,0 +1,10 @@
+{
+  "spot": "RFI",
+  "hero": "CO",
+  "stack_bb": 20,
+  "stack_tolerance": 3,
+  "actions": {
+    "raise": "AA,KK,QQ,JJ,TT,99:0.5,AKs,AQs,AJs,ATs,KQs,KJs,KTs,K9s,QJs,QTs,Q9s,JTs,J9s,T9s,98s,87s,76s,65s,AKo,AQo,AJo,KQo,KJo,QJo,JTo:0.5",
+    "allin": "99:0.5,88-22,A9s-A2s,ATo-A8o,KTo"
+  }
+}

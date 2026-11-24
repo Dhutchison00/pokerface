@@ -1,0 +1,6 @@
+rapidocr-onnxruntime>=1.4
+onnxruntime
+opencv-python
+numpy
+Pillow
+mss

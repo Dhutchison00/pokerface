@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preflop HUD</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --text: #e7e9ee; --muted: #8b93a3; --accent: #4fc3f7;
+    --allin: #8e1b2b; --raise: #e5534b; --call: #3fae5a; --check: #3fae5a; --fold: #3f6aa8;
+    --warn: #f0b429;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.live .dot { background: #3fae5a; box-shadow: 0 0 6px #3fae5a; }
+  .pill.settling .dot { background: var(--warn); }
+  .pill.error .dot, .pill.no_region .dot { background: var(--raise); }
+  .spacer { flex: 1; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #1c3b4d; border-color: #2c6b8c; }
+  main { display: grid; grid-template-columns: minmax(320px, 680px) minmax(280px, 1fr); gap: 16px; padding: 16px;
+    max-width: 1280px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .title { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px; margin-left: 6px;
+    vertical-align: middle; border: 1px solid var(--line); }
+  .badge.approx { color: var(--warn); border-color: #6b5313; }
+  .badge.exact { color: #6fd08a; border-color: #2a5c37; }
+  .badge.override { color: var(--accent); border-color: #2c6b8c; }
+
+  #grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; margin-top: 12px;
+    aspect-ratio: 1 / 1; width: 100%; }
+  .cell { position: relative; border-radius: 3px; overflow: hidden; background: #262b35;
+    display: flex; align-items: flex-start; justify-content: flex-start; cursor: default; }
+  .cell .bars { position: absolute; inset: 0; display: flex; }
+  .cell .bars span { height: 100%; }
+  .cell .lbl { position: relative; z-index: 1; font-size: clamp(8px, 1.35vw, 13px); font-weight: 600;
+    padding: 2px 3px; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
+  .cell.hero { outline: 3px solid #fff; outline-offset: -1px; z-index: 2; box-shadow: 0 0 14px rgba(255,255,255,.6); }
+  .cell.empty .bars { opacity: .25; }
+  .cell.unreached { background: #1b1f27; }
+  .cell.unreached .lbl { color: #4d5566; text-shadow: none; }
+
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .legend .it { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+
+  .hand { display: flex; align-items: center; gap: 14px; }
+  .pcards { display: flex; gap: 4px; }
+  .pc { width: 42px; height: 58px; border-radius: 6px; background: #f4f4f4; color: #111; font-weight: 700;
+    font-size: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+  .pc.red { color: #c62828; } .pc.blue { color: #1565c0; } .pc.green { color: #2e7d32; }
+  .pc small { font-size: 18px; }
+  .advice { font-size: 22px; font-weight: 700; }
+  .freqbar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px; background: #262b35; }
+  .freqtxt { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr.me td { color: var(--accent); font-weight: 600; }
+  tr.out td { color: #5d6575; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; margin-top: 8px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .notes { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+  .notes li.warn { color: var(--warn); }
+  #frame { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: none; margin-top: 10px; }
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+  #tip { position: fixed; pointer-events: none; background: #0b0d11; border: 1px solid var(--line);
+    padding: 6px 9px; border-radius: 8px; font-size: 12px; display: none; z-index: 20; white-space: nowrap; }
+  .err { color: var(--raise); font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Preflop HUD</h1>
+  <span id="status" class="pill"><span class="dot"></span><span id="statusTxt">connecting…</span></span>
+  <span class="sub" id="timing"></span>
+  <span class="spacer"></span>
+  <button class="primary" id="btnRegion" title="Drag a box around the poker table">Select region</button>
+  <button id="btnPause">Pause</button>
+  <button id="btnFrame">Show capture</button>
+</header>
+
+<main>
+  <section class="card">
+    <div class="title" id="chartTitle">Waiting for a table…</div>
+    <div class="sub"><span id="method"></span><span id="badge"></span></div>
+    <div id="grid"></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section class="stack">
+    <div class="card">
+      <div class="hand">
+        <div class="pcards" id="pcards"></div>
+        <div>
+          <div class="sub">Your hand</div>
+          <div class="advice" id="advice">–</div>
+        </div>
+      </div>
+      <div class="freqbar" id="heroBar"></div>
+      <div class="freqtxt" id="heroTxt"></div>
+    </div>
+
+    <div class="card">
+      <div class="title" style="font-size:15px">Spot</div>
+      <div class="kv" id="spotKv"></div>
+      <ul class="notes" id="notes"></ul>
+      <div class="err" id="err"></div>
+    </div>
+
+    <div class="card">
+      <div class="title" style="font-size:15px">Table</div>
+      <table id="seats"><thead><tr><th>Pos</th><th>Player</th><th>Stack</th><th>Bet</th><th>State</th></tr></thead><tbody></tbody></table>
+      <img id="frame" alt="capture with OCR overlay">
+    </div>
+  </section>
+</main>
+<div id="tip"></div>
+
+<script>
+const RANKS = "AKQJT98765432";
+const NAMES = [];
+for (let i = 0; i < 13; i++) for (let j = 0; j < 13; j++)
+  NAMES.push(i === j ? RANKS[i] + RANKS[j] : i < j ? RANKS[i] + RANKS[j] + "s" : RANKS[j] + RANKS[i] + "o");
+const COLORS = { allin: "var(--allin)", raise: "var(--raise)", call: "var(--call)", check: "var(--check)", fold: "var(--fold)" };
+const LABELS = { allin: "All-in", raise: "Raise", call: "Call", check: "Check", fold: "Fold" };
+const SUIT = { s: "♠", h: "♥", d: "♦", c: "♣" };
+
+const grid = document.getElementById("grid");
+const cells = NAMES.map((n, k) => {
+  const c = document.createElement("div");
+  c.className = "cell empty";
+  c.innerHTML = `<div class="bars"><span style="width:100%;background:#2c313c"></span></div><span class="lbl">${n}</span>`;
+  c.dataset.k = k;
+  grid.appendChild(c);
+  return c;
+});
+
+let state = null, lastVersion = -1, lastChartKey = "";
+
+function labelFor(chart, a) {
+  if (chart && chart.title && /^SB first/i.test(chart.title) && a === "call") return "Limp";
+  return LABELS[a] || a;
+}
+
+function renderChart(chart, hero) {
+  const key = JSON.stringify([chart && chart.title, chart && chart.freqs, hero && hero.index]);
+  if (key === lastChartKey) return;
+  lastChartKey = key;
+  document.getElementById("chartTitle").textContent = chart ? chart.title : "No decision";
+  document.getElementById("method").textContent = chart ? chart.method : "";
+  const b = document.getElementById("badge");
+  b.innerHTML = !chart || !chart.freqs ? "" : chart.override ? '<span class="badge override">your ranges</span>'
+    : chart.solver ? '<span class="badge exact">solver · postflop modelled</span>'
+    : chart.approx ? '<span class="badge approx">approximate</span>' : '<span class="badge exact">computed</span>';
+  const leg = document.getElementById("legend");
+  leg.innerHTML = "";
+  if (!chart || !chart.freqs) {
+    cells.forEach(c => { c.className = "cell empty"; c.querySelector(".bars").innerHTML = '<span style="width:100%;background:#2c313c"></span>'; });
+    return;
+  }
+  chart.actions.forEach(a => {
+    leg.insertAdjacentHTML("beforeend",
+      `<span class="it"><span class="sw" style="background:${COLORS[a]}"></span>${labelFor(chart, a)} <b>${chart.pct[a]}%</b></span>`);
+  });
+  cells.forEach((c, k) => {
+    const f = chart.freqs[k];
+    let html = "";
+    chart.actions.forEach((a, i) => { if (f[i] > 0) html += `<span style="width:${(f[i] * 100).toFixed(1)}%;background:${COLORS[a]}"></span>`; });
+    c.querySelector(".bars").innerHTML = html;
+    c.className = "cell" + (hero && hero.index === k ? " hero" : "") +
+      (chart.unreached && chart.unreached[k] ? " unreached" : "");
+  });
+}
+
+function renderHero(st) {
+  const t = st.table || {}, hc = t.hero_cards, hero = st.hero, chart = st.chart;
+  const pc = document.getElementById("pcards");
+  pc.innerHTML = "";
+  if (hc && hc.ranks && hc.ranks.length) {
+    hc.ranks.forEach((r, i) => {
+      const col = (hc.colors || [])[i] || "black";
+      const s = (hc.suits || [])[i];
+      pc.insertAdjacentHTML("beforeend",
+        `<div class="pc ${col}">${r === "T" ? "10" : r}<small>${s ? SUIT[s] : (col === "black" ? "♠/♣" : "")}</small></div>`);
+    });
+  }
+  const adv = document.getElementById("advice"), bar = document.getElementById("heroBar"), txt = document.getElementById("heroTxt");
+  bar.innerHTML = ""; txt.textContent = "";
+  if (!hero || !chart || !chart.freqs) {
+    adv.textContent = t.hero_class ? t.hero_class : "–";
+    return;
+  }
+  const entries = chart.actions.map(a => [a, hero.freqs[a]]).filter(e => e[1] > 0);
+  entries.sort((x, y) => y[1] - x[1]);
+  const top = entries[0];
+  adv.innerHTML = `${hero.hand}: <span style="color:${COLORS[top[0]]}">${labelFor(chart, top[0])}</span>` +
+    (top[1] < 0.995 ? ` <span class="sub">${Math.round(top[1] * 100)}%</span>` : "");
+  chart.actions.forEach(a => { const f = hero.freqs[a]; if (f > 0) bar.insertAdjacentHTML("beforeend", `<span style="width:${f * 100}%;background:${COLORS[a]}"></span>`); });
+  const fmt = v => `${v > 0 ? "+" : ""}${v} bb`;
+  let evTxt = "";
+  if (hero.ev_actions) evTxt = " · EV " + chart.actions.map(a => `${labelFor(chart, a)} ${fmt(hero.ev_actions[a])}`).join(", ");
+  else if (hero.ev != null) evTxt = ` · EV ${fmt(hero.ev)}`;
+  txt.textContent = entries.map(([a, f]) => `${labelFor(chart, a)} ${Math.round(f * 100)}%`).join(" · ") + evTxt +
+    (hero.unreached ? " · this hand rarely gets here: frequencies are unreliable, go by EV" : "") +
+    (hero.suit_unsure ? " · suits unclear, assumed offsuit" : "");
+}
+
+function renderSpot(st) {
+  const sp = st.spot || {}, t = st.table || {};
+  const kv = document.getElementById("spotKv");
+  const bl = t.blinds || [];
+  const rows = [];
+  if (bl[1]) rows.push(["Blinds", `${bl[0]}/${bl[1]}` + (bl[2] ? ` (ante ${bl[2]})` : "")]);
+  if (sp.type) rows.push(["Situation", ({ RFI: "First in (unopened)", VS_OPEN: "Facing an open", VS_SHOVE: "Facing an all-in",
+    VS_3BET: "Facing a 3-bet", LIMPED: "Facing limper(s)", WAITING: "Waiting", UNKNOWN: "Unknown" })[sp.type] || sp.type]);
+  if (sp.hero_pos) rows.push(["Position", `${sp.hero_pos} · ${sp.n_players}-handed`]);
+  if (sp.eff_bb != null) rows.push(["Effective", `${sp.eff_bb} bb`]);
+  if (sp.villain) rows.push(["Aggressor", `${sp.villain.pos} ${sp.villain.bet} bb` + (sp.villain.all_in ? " (all-in)" : "")]);
+  if (sp.to_call != null) rows.push(["To call", `${sp.to_call} bb`]);
+  if (sp.pot != null) rows.push(["Pot", `${sp.pot} bb` + (sp.ante_bb ? ` · ante ${sp.ante_bb} bb` : "")]);
+  if (sp.blind_source) rows.push(["Blinds from", sp.blind_source]);
+  kv.innerHTML = rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
+  const notes = document.getElementById("notes");
+  notes.innerHTML = (sp.warnings || []).map(w => `<li class="warn">${w}</li>`).join("") +
+    (sp.notes || []).map(n => `<li>${n}</li>`).join("") +
+    (st.override_errors || []).map(e => `<li class="warn">Range file: ${e}</li>`).join("") +
+    (st.chart && st.chart.note ? `<li class="warn">${st.chart.note}</li>` : "");
+  document.getElementById("err").textContent = st.error || (t.error || "");
+
+  const tb = document.querySelector("#seats tbody");
+  tb.innerHTML = (t.seats || []).filter(s => s.present).map(s => {
+    const out = s.labels.includes("fold") || s.labels.includes("sitting_out") || (!s.has_cards && s.idx !== 0);
+    const state = [s.labels.filter(l => l !== "sb" && l !== "bb").join(", "), s.acting ? "⏱ acting" : ""].filter(Boolean).join(" ");
+    return `<tr class="${s.idx === 0 ? "me" : out ? "out" : ""}"><td>${s.pos || "?"}</td><td>${s.name || "(seat " + s.idx + ")"}</td>` +
+      `<td>${s.stack != null ? s.stack + " bb" : "?"}</td><td>${s.bet ? s.bet + " bb" : ""}</td><td>${state}</td></tr>`;
+  }).join("");
+}
+
+function renderStatus(st) {
+  const p = document.getElementById("status");
+  const s = st.paused ? "paused" : st.status;
+  p.className = "pill " + s;
+  document.getElementById("statusTxt").textContent =
+    ({ live: st.image_mode ? "image mode" : "live", settling: "reading…", paused: "paused", no_region: "no region",
+       error: "error", starting: "starting" })[s] || s;
+  document.getElementById("timing").textContent = st.parse_ms ?
+    `read in ${st.parse_ms} ms` + (st.table && st.table.ocr_device ? ` · OCR on ${st.table.ocr_device.toUpperCase()}` : "") : "";
+  document.getElementById("btnPause").textContent = st.paused ? "Resume" : "Pause";
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    const st = await r.json();
+    if (st.version !== lastVersion) {
+      lastVersion = st.version; state = st;
+      renderStatus(st);
+      renderChart(st.chart, st.hero);
+      renderHero(st);
+      renderSpot(st);
+      const fr = document.getElementById("frame");
+      if (fr.style.display === "block") fr.src = "/api/frame.jpg?v=" + st.version;
+    }
+  } catch (e) {
+    document.getElementById("statusTxt").textContent = "server offline";
+    document.getElementById("status").className = "pill error";
+  }
+  setTimeout(poll, 400);
+}
+poll();
+
+document.getElementById("btnRegion").onclick = async (ev) => {
+  const b = ev.target; b.disabled = true; b.textContent = "Drag on screen…";
+  try {
+    const r = await fetch("/api/select-region", { method: "POST" });
+    const j = await r.json();
+    b.textContent = j.ok ? "Region saved ✓" : j.error ? "Picker failed" : "Cancelled";
+    if (j.error) document.getElementById("err").textContent = "Region picker: " + j.error;
+  } catch (e) { b.textContent = "Failed"; }
+  setTimeout(() => { b.textContent = "Select region"; b.disabled = false; }, 1500);
+};
+document.getElementById("btnPause").onclick = () => fetch("/api/pause", { method: "POST" });
+document.getElementById("btnFrame").onclick = (ev) => {
+  const fr = document.getElementById("frame");
+  const show = fr.style.display !== "block";
+  fr.style.display = show ? "block" : "none";
+  ev.target.textContent = show ? "Hide capture" : "Show capture";
+  if (show) fr.src = "/api/frame.jpg?v=" + Date.now();
+};
+
+// tooltip
+const tip = document.getElementById("tip");
+grid.addEventListener("mousemove", e => {
+  const c = e.target.closest(".cell");
+  if (!c || !state || !state.chart || !state.chart.freqs) { tip.style.display = "none"; return; }
+  const k = +c.dataset.k, ch = state.chart, f = (ch.freqs_raw || ch.freqs)[k];
+  let s = `<b>${NAMES[k]}</b><br>` + ch.actions.map((a, i) => f[i] > 0 ? `${labelFor(ch, a)} ${Math.round(f[i] * 100)}%` : "").filter(Boolean).join(" · ");
+  if (ch.ev_actions) s += "<br>EV " + ch.actions.map((a, i) => `${labelFor(ch, a)} ${ch.ev_actions[k][i] > 0 ? "+" : ""}${ch.ev_actions[k][i]}`).join(" · ") + " bb";
+  else if (ch.ev && ch.ev[k] != null) s += `<br>EV ${ch.ev[k] > 0 ? "+" : ""}${ch.ev[k]} bb`;
+  if (ch.unreached && ch.unreached[k]) s += "<br><i>rarely reaches this spot</i>";
+  tip.innerHTML = s; tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - 220) + "px"; tip.style.top = (e.clientY + 14) + "px";
+});
+grid.addEventListener("mouseleave", () => tip.style.display = "none");
+</script>
+</body>
+</html>
