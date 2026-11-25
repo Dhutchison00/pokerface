@@ -14,7 +14,8 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from preflop_hud.solver import Tree, CFR, Solution, sol_path, STACK_GRID, SolverStore, check_zero_sum  # noqa: E402
+from preflop_hud.solver import (Tree, CFR, Solution, sol_path, solve_and_save, STACK_GRID, SolverStore,  # noqa: E402
+                                 check_zero_sum)
 from preflop_hud.cards import HAND_INDEX, range_pct, COMBO_WEIGHTS as W  # noqa: E402
 
 # 1. known Nash
@@ -41,6 +42,9 @@ AA = HAND_INDEX["AA"]
 prev = None
 rows = []
 for s in STACK_GRID:
+    if not os.path.exists(sol_path(8, s, dead)):
+        # a fresh clone has no cache: solve the grid point as the precompute would (seconds, once)
+        solve_and_save(8, s, dead, verbose=False)
     sol = Solution(sol_path(8, s, dead))
     assert max(sol.meta["br_gain"]) < 0.01, (s, sol.meta["br_gain"])
     for key in sol.meta["spots"]:
