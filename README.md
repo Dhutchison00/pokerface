@@ -278,6 +278,10 @@ takes minutes per grid point, or hours with limps, so it runs offline. The HUD t
 exported charts from `data/gtopen/` and shows them with a **GTOpen** badge. Anything not exported
 falls back to the HUD's own solver. GTOpen charts have no per-hand EVs.
 
+The repository ships the exports for 8-handed tournament play (chip EV, 1bb of antes, limps allowed) at
+every grid depth from 10 to 100bb, so those charts work without building GTOpen. Other table sizes,
+cash games and ICM stages need their own solves.
+
 Build GTOpen once (needs Rust and the Visual Studio C++ build tools), then point the HUD at it with
 `--gtopen-dir`, the `HUD_GTOPEN_DIR` environment variable or `"gtopen_dir"` in `config.json`:
 
