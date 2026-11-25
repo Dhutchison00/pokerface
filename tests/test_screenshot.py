@@ -12,6 +12,17 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+# The reference screenshots show players' screen names, so they aren't in the repository: samples/ is
+# git-ignored and holds whatever screenshots you keep locally. Without them there is nothing to read.
+SAMPLES = ["clubwpt_cutoff.webp", "hero_43s_river.webp", "hero_q6s_utg.webp", "hero_qh2s_2read7.png",
+           "hero_ah2h_red_rec.png", "hero_7s7c_board_qckd8c.png", "hero_7d3s_board_8d9s8c.webp",
+           "table6_annotated_left_right_seats.webp"]
+_missing = [f for f in SAMPLES if not os.path.exists(os.path.join(ROOT, "samples", f))]
+if _missing:
+    print(f"SKIPPED: {len(_missing)} of {len(SAMPLES)} reference screenshots are missing from samples/ "
+          f"({', '.join(_missing)}). Nothing was tested.")
+    sys.exit(0)
 import tempfile  # noqa: E402
 os.environ["HUD_GTOPEN_CHARTS"] = tempfile.mkdtemp()   # local GTOpen exports must not change these results
 

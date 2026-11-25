@@ -4,9 +4,8 @@ Watches a poker table on your screen, reads it with OCR, and shows a GTO-Wizard-
 13×13 preflop chart for the player in the **bottom-centre seat** on a local web page.
 The chart updates as the hand moves on.
 
-Built for your own bots table (laid out like the ClubWPT Gold reference screenshot in
-`samples/`). Use it on your own app only: real-money and sweepstakes sites ban real-time
-assistance tools.
+Built for your own bots table (laid out like ClubWPT Gold's 8-seat table). Use it on your own app
+only: real-money and sweepstakes sites ban real-time assistance tools.
 
 ## Quick start
 
@@ -42,11 +41,11 @@ Other commands:
 
 | Command | What it does |
 |---|---|
-| `python -m preflop_hud --image samples\clubwpt_cutoff.webp` | Run the page against a screenshot (testing) |
+| `python -m preflop_hud --image samples\table.png` | Run the page against a screenshot of your own (testing). `samples/` is git-ignored: screenshots show players' screen names, so none are in the repository |
 | `python -m preflop_hud --check FILE` | Parse one screenshot and print the spot and chart |
 | `python -m preflop_hud --select-region` | Pick the region without the web page |
 | `python -m preflop_hud --port 9000 --interval 1` | Change the port or capture speed |
-| `python tests\test_screenshot.py` | Regression test on the reference screenshot plus simulated spots |
+| `python tests\test_screenshot.py` | Regression test on the reference screenshots plus simulated spots. It needs those screenshots in `samples/` (kept locally, not in the repository) and prints `SKIPPED` without them |
 
 **Show capture** on the page displays the last frame with every OCR box labelled with what it was
 read as (stack, bet, label, name, and so on). Use it first whenever a number looks wrong.

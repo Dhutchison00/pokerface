@@ -5,9 +5,9 @@ venv/
 # Solver cache: solved spots, regenerated on demand (python -m preflop_hud.solver precomputes them)
 data/solutions/
 
-# Screenshots dropped in for development. Samples already committed (the ones the tests read)
-# stay tracked; add a new one deliberately with `git add -f samples/<file>`.
-samples/*
+# Screenshots, including the ones tests/test_screenshot.py reads: they show players' screen names,
+# so none are tracked
+samples/
 
 # GTOpen preflop chart exports are tracked (data/gtopen/*.npz); only a half-written export isn't
 data/gtopen/*.tmp.npz
