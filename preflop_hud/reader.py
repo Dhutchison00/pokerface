@@ -175,6 +175,7 @@ class TableState:
     felt: list | None = None
     ocr_ms: int = 0
     texts: list = field(default_factory=list)  # for the debug overlay
+    seat_layout: list | None = None            # the seat anchors this frame was read with
 
     def to_dict(self):
         d = asdict(self)
@@ -433,11 +434,32 @@ def _decode_rank(glyph_bgr):
         j = int(np.unravel_index(sub[:, 1:].argmax(), sub[:, 1:].shape)[1]) + 1
         out = [chars[allowed[j]]]
     s = "".join(out)
+    if s.startswith("1") and "0" not in s and _ink_blobs(glyph_bgr) < 2:
+        # "10" is read as a 1 then a 0 (its digits can touch at small sizes, so it may be one shape);
+        # a lone "1" on a single shape is a narrow 7 (or similar): the best rank that isn't 1 or 0
+        keep = [k for k in range(1, len(allowed)) if chars[allowed[k]] not in "10"]
+        j = keep[int(np.unravel_index(sub[:, keep].argmax(), sub[:, keep].shape)[1])]
+        s = chars[allowed[j]]
     if s.startswith("1"):
         return "T"
     if s[:1] == "0":               # no 0 rank: a lone 0 is a Q
         return "Q"
     return s[:1] if s[:1] in RANK_CHARS else None
+
+
+def _ink_blobs(glyph_bgr):
+    """Separate dark shapes in a black-on-white glyph image (ignoring specks)."""
+    ink = (glyph_bgr[..., 0] < 128).astype(np.uint8)
+    n, _, st, _ = cv2.connectedComponentsWithStats(ink)
+    total = max(1, int(ink.sum()))
+    return sum(1 for k in range(1, n) if st[k, 4] > 0.05 * total)
+
+
+def _lowercase_word(txt):
+    """OCR text that's only letters with a lowercase one: this app's tall Q comes back as "a" (and
+    would be taken for an A once upper-cased). Ranks are capitals or digits, so it's unread."""
+    t = txt.strip()
+    return t.isalpha() and t != t.upper()
 
 
 def _fix_2_7(rank, mask):
@@ -557,7 +579,7 @@ def read_hero_cards(img, felt, lay):
             if not t or len(t) > 2:
                 continue                       # labels such as "HIGH CARD"
             r = {"10": "T", "1O": "T", "0": "Q"}.get(t, t)
-            r = r if len(r) == 1 and r in RANK_CHARS else None   # None: a glyph OCR couldn't read
+            r = r if len(r) == 1 and r in RANK_CHARS and not _lowercase_word(txt) else None   # None: read the glyph
             xs, ys = [p[0] for p in box], [p[1] for p in box]
             cands.append((min(xs) * scale / s, min(ys), r, (min(xs), min(ys), max(xs), max(ys)), float(conf)))
         cands.sort()
@@ -699,38 +721,44 @@ def read_board(img, felt, lay):
     boxes = _find_board_cards(hsv, fh)
     if not boxes:
         return []
-    # one OCR pass over the board, upscaled so a single glyph is ~100px tall
-    card_h = boxes[0][3] - boxes[0][1]
-    scale = max(1.0, min(4.0, 300.0 / max(card_h, 1)))
-    up = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    tokens = [[] for _ in boxes]
-    for box, txt, conf in get_ocr()(up)[0] or []:
-        cx = np.mean([p[0] for p in box]) / scale
-        cy = np.mean([p[1] for p in box]) / scale
-        for i, (bx0, by0, bx1, by1) in enumerate(boxes):
-            if bx0 <= cx <= bx1 and by0 <= cy <= by0 + 0.5 * (by1 - by0):
-                tokens[i].append(_norm_text(txt).replace("I", "1"))
+    # each card's rank glyph, read by the rank-only recogniser. Over every recorded frame this got
+    # 94 of 2173 board ranks wrong (nearly all mid-animation) against 213 for reading the board with
+    # one OCR pass first: that pass's text-direction step turns a 6 into a 9 and reads a 4 as a 10
+    ranks = []
+    for (bx0, by0, bx1, by1) in boxes:
+        r = None
+        g = _rank_glyph(hsv[by0:by1, bx0:bx1])
+        if g is not None:
+            mask = g[..., 0] < 128
+            ys, xs = np.nonzero(mask)
+            mask = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if ys.size else None
+            r = _decode_rank(g)
+            if r is not None:
+                r = _fix_2_7(r, mask)
+        ranks.append(r)
+    if any(r is None for r in ranks):
+        # a glyph that couldn't be isolated or read: one OCR pass over the board, upscaled so a single
+        # glyph is ~100px tall, for those cards only
+        card_h = boxes[0][3] - boxes[0][1]
+        scale = max(1.0, min(4.0, 300.0 / max(card_h, 1)))
+        up = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        tokens = [[] for _ in boxes]
+        for box, txt, conf in get_ocr()(up)[0] or []:
+            cx = np.mean([p[0] for p in box]) / scale
+            cy = np.mean([p[1] for p in box]) / scale
+            for i, (bx0, by0, bx1, by1) in enumerate(boxes):
+                if bx0 <= cx <= bx1 and by0 <= cy <= by0 + 0.5 * (by1 - by0) and not _lowercase_word(txt):
+                    tokens[i].append(_norm_text(txt).replace("I", "1"))
 
-    def pick(toks):
-        # "10" can come back split as "1" + "0", and a lone "0" is otherwise a misread Q
-        if any(t.startswith("1") for t in toks):
-            return "T"
-        return next((r for r in map(_rank_token, toks) if r), None)
-    ranks = [pick(t) for t in tokens]
+        def pick(toks):
+            # "10" can come back split as "1" + "0", and a lone "0" is otherwise a misread Q
+            if any(t.startswith("1") for t in toks):
+                return "T"
+            return next((r for r in map(_rank_token, toks) if r), None)
+        ranks = [r if r is not None else pick(t) for r, t in zip(ranks, tokens)]
     out = []
     for i, (bx0, by0, bx1, by1) in enumerate(boxes):
         corner = (slice(by0, by0 + int(0.45 * (by1 - by0))), slice(bx0, bx0 + int(0.5 * (bx1 - bx0))))
-        if ranks[i] is None or ranks[i] in ("2", "7"):
-            # text detection misses some single glyphs: read the isolated rank glyph directly,
-            # restricted to rank characters; and settle 2 vs 7 by the glyph's base
-            g = _rank_glyph(hsv[by0:by1, bx0:bx1])
-            if g is not None:
-                mask = g[..., 0] < 128
-                ys, xs = np.nonzero(mask)
-                mask = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if ys.size else None
-                if ranks[i] is None:
-                    ranks[i] = _decode_rank(g)
-                ranks[i] = _fix_2_7(ranks[i], mask)
         h = hsv[corner]
         ink = ~((h[..., 1] < 50) & (h[..., 2] > 185))
         color = _ink_color(h, ink) if ink.any() else None
@@ -837,6 +865,17 @@ def read_table(img, layout=None, ocr_result=None) -> TableState:
         return v if is_bb or st.unit == "BB" else v / st.bb
 
     R = lay["seat_radius"]
+    # which seat layout this table uses: the one with more stack amounts next to its anchors
+    amounts = [(t["u"], t["v"]) for t in texts if parse_amount(t["n"]) and
+               (st.unit != "BB" or parse_amount(t["n"])[1])]
+
+    def fit(seats):
+        return sum(1 for s in seats if any(dist(a, tuple(s["stack"])) < R for a in amounts))
+    best = max([lay["seats"]] + list(lay.get("seats_alt") or []), key=fit)   # max keeps the first on a tie
+    if best is not lay["seats"] and fit(best) > fit(lay["seats"]):
+        lay = dict(lay, seats=best)
+        st.seats = [Seat(i) for i in range(len(best))]
+    st.seat_layout = [dict(s) for s in lay["seats"]]
     seat_xy = [tuple(s["stack"]) for s in lay["seats"]]
     bet_xy = [tuple(s["bet"]) for s in lay["seats"]]
 
@@ -920,7 +959,7 @@ def read_table(img, layout=None, ocr_result=None) -> TableState:
     # ---- community cards
     try:
         st.board = read_board(img, felt, lay)
-    except Exception as e:          # the board is display-only: never lose the table over it
+    except Exception as e:          # never lose the table over it (the tracker waits for a second empty read)
         st.board = []
         print(f"board read failed: {type(e).__name__}: {e}", file=sys.stderr)
 
@@ -961,7 +1000,7 @@ def annotate(img, st: TableState, layout=None):
     if st.felt:
         fx, fy, fw, fh = st.felt
         cv2.rectangle(out, (fx, fy), (fx + fw, fy + fh), (0, 255, 255), 2)
-        for i, s in enumerate(lay["seats"]):
+        for i, s in enumerate(st.seat_layout or lay["seats"]):
             for key, col in (("stack", (255, 200, 0)), ("bet", (0, 140, 255))):
                 u, v = s[key]
                 p = (int(fx + u * fw), int(fy + v * fh))

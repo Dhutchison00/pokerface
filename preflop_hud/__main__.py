@@ -16,12 +16,10 @@ def main():
 
     if a.select_region:
         from .region_select import select_region
-        from .server import load_config, save_config
+        from .server import save_config
         r = select_region()
         if r:
-            cfg = load_config()
-            cfg["region"] = r
-            save_config(cfg)
+            save_config({"region": r})
             print("Saved region", r)
         else:
             print("Cancelled")

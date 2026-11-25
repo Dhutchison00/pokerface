@@ -85,4 +85,70 @@ btn = dict(rfi, hero_pos="BTN")                              # not in the export
 ch2, msg2 = charts.chart(btn)
 assert ch2 is None or ch2["source"] == "hud", ch2
 print("HUD prefers GTOpen, falls back for missing nodes OK:", ch["method"], "|", (ch2 or {}).get("method", msg2))
+
+# ---------------------------------------------------------------- re-exporting a chart the HUD has loaded
+# export() writes next to the chart and replaces it. Both stores above have this chart loaded, and on
+# Windows a file that is still open can't be replaced.
+path = os.path.join(TMP, gtopen.game_name(8, 21, 1.0, True) + ".npz")
+assert store.get(8, 21, 1.0).spot("RFI:CO")["strategy"][1, HAND_INDEX["KK"]] == 0.0
+with np.load(path) as z:
+    arrays = {k: z[k] for k in z.files}
+arrays["RFI__CO__strategy"] = arrays["RFI__CO__strategy"].copy()
+arrays["RFI__CO__strategy"][:, HAND_INDEX["KK"]] = [0.0, 1.0]
+tmp = path + ".tmp.npz"
+np.savez_compressed(tmp, **arrays)
+os.replace(tmp, path)
+assert gtopen.GtopenChart(path).spot("RFI:CO")["strategy"][1, HAND_INDEX["KK"]] == 1.0
+print("re-export over a loaded chart OK")
+
+# ---------------------------------------------------------------- resuming a checkpointed solve
+# A loaded save already has its iterations, and GTOpen reports the GPU only once the solve is set up:
+# the first status of a resumed chunk shows neither progress nor the GPU, which isn't a CPU fallback.
+import time    # noqa: E402
+import types   # noqa: E402
+
+
+class FakeServer:
+    calls = []
+
+    def __init__(self, *a, **k):
+        self.running, self.polls, self.iteration = False, 0, 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def api(self, path, body=None, timeout=None):
+        FakeServer.calls.append(path)
+        if path == "/api/preflop/solve":
+            self.running, self.polls = True, 0
+        if path != "/api/preflop/status":
+            return {}
+        if not self.running:
+            done = {"stop_reason": "target_reached", "gap_total": 0.01, "gaps": [0.01]} if self.iteration > 200 else {}
+            return dict(done, state="idle", iteration=self.iteration)
+        self.polls += 1
+        if self.polls == 1:
+            return {"state": "running", "iteration": 200}                 # still setting up
+        if self.polls == 2:
+            return {"state": "running", "iteration": 200, "gpu": True}    # on the GPU
+        self.running, self.iteration = False, 300
+        return {"state": "idle", "iteration": 300, "gpu": True, "gap_total": 0.01, "stop_reason": "target_reached"}
+
+
+gdir = tempfile.mkdtemp()
+os.makedirs(os.path.join(gdir, "saves", "preflop"))
+open(os.path.join(gdir, "saves", "preflop", gtopen.game_name(8, 60, 1.0, True) + ".gtop"), "w").close()
+real = gtopen.Server, gtopen.time
+gtopen.Server = FakeServer
+gtopen.time = types.SimpleNamespace(sleep=lambda s: None, time=time.time, strftime=time.strftime)
+try:
+    ok = gtopen.solve(8, 60, 1.0, True, gdir)
+finally:
+    gtopen.Server, gtopen.time = real
+assert ok and "/api/preflop/stop" not in FakeServer.calls, FakeServer.calls
+assert "/api/preflop/load" in FakeServer.calls and "/api/preflop/save" in FakeServer.calls
+print("resumed solve waits for the GPU report OK")
 print("all tests passed")

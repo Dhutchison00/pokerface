@@ -26,11 +26,26 @@ import sys
 import time
 
 EPS = 0.05
+READS_KEPT = 15                  # street-start pot/stack reads kept for the median
 STREETS = ["preflop", "flop", "turn", "river"]
 POSTFLOP_ORDER = ["SB", "BB", "UTG", "UTG1", "UTG2", "UTG3", "LJ", "HJ", "CO", "BTN"]
 
 
 # ---------------------------------------------------------------- observations
+REAL_BUTTONS = ("BET", "RAISE", "CALL", "ALL-IN", "ALLIN")
+
+
+def hero_turn(st) -> bool:
+    """The hero is to act: the hero's seat is highlighted, or real action buttons are up (BET / CALL /
+    RAISE). Pre-action checkboxes shown while others act ("FOLD/CHECK", "CHECK", "CALL ANY") don't count."""
+    if any(s.idx == 0 and s.acting for s in st.seats):
+        return True
+    btns = [str(b).upper() for b in (getattr(st, "hero_buttons", None) or [])]
+    if any("/" in b or "ANY" in b for b in btns):
+        return False
+    return any(b.startswith(REAL_BUTTONS) for b in btns)
+
+
 def observe(st, spot=None, t=None) -> dict:
     """The parts of one screen read the tracker uses (JSON-friendly, so recordings can replay)."""
     hc = st.hero_cards or {}
@@ -41,6 +56,7 @@ def observe(st, spot=None, t=None) -> dict:
     return {
         "t": time.time() if t is None else t, "ok": bool(st.ok),
         "hero": hero, "pot": st.pot,
+        "hero_turn": hero_turn(st),
         "board": [f"{c.get('rank') or '?'}{c.get('suit') or '?'}" for c in (st.board or [])],
         "positions": (spot or {}).get("positions") or {},
         "seats": [{"idx": s.idx, "present": s.present, "stack": s.stack, "bet": round(s.bet or 0.0, 3),
@@ -71,6 +87,11 @@ class Hand:
         self.no_cards_frames = {}    # seat -> consecutive frames without cards (fold debounce)
         self.players_folded_before = False   # seats already folded when we joined: logged once
         self._last_board_read = None
+        self.hero_turn = False
+        # what each street started with: the pot (read while no bets are out) and every player's
+        # stack plus chips in front, which stays constant until the street's bets are swept.
+        # Medians over several frames, so one misread doesn't matter. Postflop solving needs them.
+        self.reads = {}                    # street -> {"pot": [...], "stacks": {seat: [...]}, "dead": [...]}
         # all-in before this street (or before we joined): those seats have nothing left to do
         self.allin_before = {s["idx"] for s in obs["seats"] if s["idx"] in self.players and s["all_in"]}
         self.allin |= self.allin_before
@@ -82,6 +103,7 @@ class Hand:
             self.contrib = {s["idx"]: s["bet"] for s in obs["seats"] if s["idx"] in self.players}
             self.max_bet = max(self.contrib.values(), default=0.0)
             self.notes.append(f"joined on the {STREETS[street]}: earlier streets weren't seen")
+        self._note_reads(obs)
 
     # ------------------------------------------------------------ helpers
     def pos(self, seat):
@@ -146,7 +168,50 @@ class Hand:
         return (len(self.active()) <= 1 or (self.street == 3 and self.betting_done())
                 or (self.street > 0 and len(live) <= 1 and self.betting_done()))
 
+    def _note_reads(self, obs):
+        r = self.reads.setdefault(self.street, {"pot": [], "stacks": {}, "dead": []})
+        seats = [s for s in obs["seats"] if s["present"]]
+        out = sum(s["bet"] or 0.0 for s in seats)
+        # once this street's bets are swept (the betting closed but the next card isn't out yet)
+        # the pot already holds them and stacks are lower: those reads aren't the street's start
+        if self.max_bet > EPS and out <= EPS:
+            return
+        pot = obs.get("pot")
+        if pot is not None and pot > 0:
+            if self.street > 0 and out <= EPS and len(r["pot"]) < READS_KEPT:
+                r["pot"].append(pot)
+            if self.street == 0 and len(r["dead"]) < READS_KEPT and pot - out > -EPS:
+                r["dead"].append(max(0.0, pot - out))      # antes: the pot minus the blinds in front
+        for s in seats:
+            if s["idx"] in self.players and s["stack"] is not None:
+                lst = r["stacks"].setdefault(s["idx"], [])
+                if len(lst) < READS_KEPT:
+                    lst.append(s["stack"] + (s["bet"] or 0.0))
+
+    def _bet_possible(self, seat, s):
+        """A bet can't be more than the seat had this street (its stack plus chips in front, a
+        constant until the bets are swept) minus what it still has behind. Frames that break this
+        are misreads while chips animate (a 5.0 bet over a 2.99 call; another seat's chips
+        flying past an all-in player's spot)."""
+        import statistics
+        vals = (self.reads.get(self.street) or {}).get("stacks", {}).get(seat)
+        if not vals or s["stack"] is None:
+            return True
+        total = statistics.median(vals)
+        return s["bet"] <= total - s["stack"] + max(0.1, 0.03 * total)
+
+    def street_start(self, street=None):
+        """{"pot", "stacks": {seat: bb}, "dead"} at the start of a street (medians; None if unread)."""
+        import statistics
+        r = self.reads.get(self.street if street is None else street) or {}
+        med = (lambda v: round(statistics.median(v), 2) if v else None)
+        return {"pot": med(r.get("pot")), "dead": med(r.get("dead")),
+                "stacks": {i: med(v) for i, v in (r.get("stacks") or {}).items() if v}}
+
     def update(self, obs):
+        self.hero_turn = bool(obs.get("hero_turn"))
+        if obs.get("hero") and self.hero and "?" in self.hero and obs["hero"].count("?") < self.hero.count("?")                 and obs["hero"][0::2] == self.hero[0::2]:
+            self.hero = obs["hero"]          # a suit that was unreadable at first has been read
         for s in obs["seats"]:                # all-in is a state, not only an action we saw
             if s["idx"] in self.players and s["all_in"] and s["idx"] not in self.folded:
                 self.allin.add(s["idx"])
@@ -165,10 +230,23 @@ class Hand:
             early = [s["idx"] for s in obs["seats"]
                      if s["present"] and "fold" in s["labels"] and s["idx"] not in self.players and s["idx"] != 0]
             self.players_folded_before = True
-            if early and self.positions:
+            # chips already in front of a seat other than the blinds: a limp or raise made before
+            # we started (shown as a bet with a CALL/RAISE label). Logged with the folds, in order.
+            blinds = {k for k, v in self.positions.items() if v in ("SB", "BB")}
+            put = {s["idx"]: s["bet"] for s in obs["seats"]
+                   if s["idx"] in self.players and s["idx"] not in blinds and s["idx"] != 0 and s["bet"] > EPS}
+            if (early or put) and self.positions:
                 self.players |= set(early)
-                for i in self.after_last(early):
-                    self.add(i, "fold", inferred=True)
+                bb = max((self.contrib.get(k, 0.0) for k in blinds), default=0.0)
+                level = bb
+                for i in self.after_last(early + list(put)):
+                    if i not in put:
+                        self.add(i, "fold", inferred=True)
+                        continue
+                    allin = any(s["idx"] == i and s["all_in"] for s in obs["seats"])
+                    kind = "allin" if allin else "raise" if put[i] > level + EPS else "call"
+                    self.add(i, kind, put[i], inferred=True)
+                    level = max(level, put[i])
         if self.street == 0 and not any(not a["inferred"] for a in self.actions):
             # the deal may still be animating on the first frames: keep adding seats that show cards
             for s in obs["seats"]:
@@ -189,9 +267,12 @@ class Hand:
             self.board = board
         elif len(board) > len(self.board):
             self.board = board
-        elif board and len(board) == len(self.board) and board != self.board and board == self._last_board_read:
-            self.board = board          # a card misread while it animated in: two agreeing frames correct it
+        elif board and len(board) == len(self.board) and board != self.board and                 (board == self._last_board_read or obs.get("settled")):
+            # a card misread while it animated in: two agreeing frames correct it, or one read of the
+            # settled screen (taken once it stopped changing, so nothing was mid-animation)
+            self.board = board
         self._last_board_read = board
+        self._note_reads(obs)
 
         # 2. what each seat did since the last frame: chips added, a FOLD label (or its cards gone
         #    for two frames), a CHECK label. Several can land in one frame when bots act quickly,
@@ -203,6 +284,8 @@ class Hand:
             gone = not s["has_cards"] and not s["all_in"] and i != 0
             self.no_cards_frames[i] = self.no_cards_frames.get(i, 0) + 1 if gone else 0
             if s["bet"] > self.contrib.get(i, 0.0) + EPS:
+                if not self._bet_possible(i, s):
+                    continue                    # a misread mid-animation: more than the seat has
                 events[i] = "chips"
             elif "fold" in s["labels"] or self.no_cards_frames[i] >= 2:
                 events[i] = "fold"
@@ -270,9 +353,14 @@ class Hand:
                             + ("*" if a["inferred"] else "") for a in acts)
             lines.append({"street": st, "board": self.board[:{0: 0, 1: 3, 2: 4, 3: 5}[STREETS.index(st)]],
                           "text": txt})
-        return {"id": self.id, "hero": self.hero, "street": STREETS[self.street], "board": self.board,
-                "actions": self.actions, "lines": lines, "notes": self.notes,
-                "in_hand": sorted(self.active()), "inferred_marker": "*"}
+        # copies: a summary is a snapshot of this frame, later frames mustn't change it
+        return {"id": self.id, "hero": self.hero, "street": STREETS[self.street], "board": list(self.board),
+                "actions": [dict(a) for a in self.actions], "lines": lines, "notes": list(self.notes),
+                "in_hand": sorted(self.active()), "inferred_marker": "*",
+                # for the postflop solver
+                "positions": {str(k): v for k, v in self.positions.items()},
+                "allin": sorted(self.allin), "hero_turn": self.hero_turn,
+                "start": {STREETS[k]: self.street_start(k) for k in sorted(self.reads)}}
 
 
 class Tracker:
@@ -285,15 +373,36 @@ class Tracker:
         self._n = 0
         self._last_board = 0
         self._other_hero = (None, 0)          # different hole cards, and in how many frames running
+        self._cleared = 0                     # reads in a row without a board, after one that had it
+        self._filed = None                    # the Hand last filed because its board cleared
+        self._cards_gone = False              # ...and whether the hole cards have left the screen since
+        self._old_board = False               # the hand was dealt with the last hand's board still up
 
     @staticmethod
     def _ranks(hero):
         return "".join(sorted(hero[0::2])) if hero else None   # "Qs6s" -> "6Q": suits can flicker
 
+    def _same_deal(self, obs, board):
+        """After a hand was filed for its cleared board, what the same hole cards on screen mean:
+        "resume" when its board is back (it was only unread for a while: the hand goes on), "stale"
+        while they're the old cards still lying there (no new hand), None for a new deal: other
+        cards, or the same ranks dealt again (the cards left the screen in between, or the button
+        has moved)."""
+        f = self._filed
+        if f is None or self._ranks(obs.get("hero")) != self._ranks(f.hero):
+            return None
+        if len(f.board) >= 3 and board[:len(f.board)] == f.board:
+            return "resume"
+        pos = {int(k): v for k, v in (obs.get("positions") or {}).items()}
+        if self._cards_gone or (pos and f.positions and pos != f.positions):
+            return None
+        return "stale"
+
     def update(self, obs):
         if not obs.get("ok"):
             return self.state()
-        board_n = len([c for c in obs["board"] if c[0] != "?"])
+        board = [c for c in obs["board"] if c[0] != "?"]
+        board_n = len(board)
         changed = False
         if self.hand is not None and obs.get("hero") and self.hand.hero:
             r = self._ranks(obs["hero"])
@@ -305,23 +414,47 @@ class Tracker:
             else:
                 self._other_hero = (None, 0)
         # the board cleared: the hand is over (the next starts when hole cards show). Only a fully
-        # cleared board counts: at the end of a hand the cards animate away a few at a time
-        if self.hand is not None and board_n == 0 and self._last_board > 0:
-            self._file()
-        new = (self.hand is None and obs.get("hero")) or (self.hand is not None and changed)
+        # cleared board counts: at the end of a hand the cards animate away a few at a time. And only
+        # once a second read agrees, or on a read of the settled screen: one read without a board is
+        # as likely an overlay or a failed board read in the middle of the hand
+        if self.hand is None or board_n > 0:
+            self._cleared = 0                 # counted per hand: a new hand starts without a board
+        elif self._last_board > 0 or self._cleared:
+            self._cleared += 1
+        self._last_board = board_n
+        if self.hand is not None and self._cleared:
+            if self._cleared >= 2 or obs.get("settled"):
+                # a hand dealt while the last one's board was still up loses that board, not its
+                # own: it isn't over, and starts again below as the preflop hand it is
+                self._filed, self._cards_gone = (None if self._old_board else self.hand), False
+                self._file()
+                self._cleared = 0
+            elif not changed:
+                return self.state()           # unconfirmed: the hand isn't shown this read
+        if self.hand is None and not obs.get("hero"):
+            self._cards_gone = True
+        same = self._same_deal(obs, board) if self.hand is None and obs.get("hero") else None
+        if same == "resume":
+            # the board was unread for a few reads, not cleared: take the hand up where it was
+            self.hand, self._filed = self._filed, None
+            if self.history and self.history[-1]["id"] == self.hand.id:
+                self.history.pop()
+        new = (self.hand is None and obs.get("hero") and same is None) or (self.hand is not None and changed)
         if new:
+            # new hole cards with a board still on screen: that board is the last hand's
+            self._old_board = self.hand is not None and board_n > 0
             if self.hand is not None:
                 self._file()
             self._n += 1
             self.hand = Hand(obs, self._n)
             self._other_hero = (None, 0)
+            self._filed, self._cleared = None, 0
             if self.hand.street == 0 and self.hand.max_bet > 1.0 + EPS:
                 self.hand.flag("joined after the first raise: earlier preflop actions are missing")
         if self.hand is not None:
             if not self.hand.hero and obs.get("hero"):
                 self.hand.hero = obs["hero"]
             self.hand.update(obs)
-        self._last_board = board_n
         return self.state()
 
     def _file(self):

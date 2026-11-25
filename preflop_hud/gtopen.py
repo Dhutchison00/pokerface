@@ -97,8 +97,10 @@ def find_gtopen_dir(arg=None):
 
 
 class Server:
-    def __init__(self, gtopen_dir, log_path, port=PORT):
+    def __init__(self, gtopen_dir, log_path, port=PORT, exe=None):
+        """exe: a gto-server built somewhere else (a research build), run from gtopen_dir all the same."""
         self.dir, self.port, self.log_path, self.proc = gtopen_dir, port, log_path, None
+        self.exe = exe
 
     def api(self, path, body=None, timeout=3600):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}",
@@ -116,7 +118,7 @@ class Server:
         nvrtc = os.path.join(self.dir, ".cuda-nvrtc", "nvidia", "cuda_nvrtc", "bin")
         if os.path.isdir(nvrtc):
             env["PATH"] = nvrtc + os.pathsep + env.get("PATH", "")
-        exe = os.path.join(self.dir, "target", "release", "gto-server.exe")
+        exe = self.exe or os.path.join(self.dir, "target", "release", "gto-server.exe")
         self._log = open(self.log_path, "a")
         self.proc = subprocess.Popen([exe], cwd=self.dir, env=env, stdout=self._log, stderr=subprocess.STDOUT)
         for _ in range(120):
@@ -171,15 +173,18 @@ def solve(n, stack, dead, limp, gtopen_dir, target_gap=0.02, max_iters=3000, chu
             if st.get("stop_reason") == "target_reached":
                 break
             t0 = time.time()
+            before = st["iteration"]
             srv.api("/api/preflop/solve", {"iterations": min(chunk, max_iters - st["iteration"]),
                                            "check_every": 25, "target_gap": target_gap})
-            # GTOpen reports GPU vs CPU only once it has set the solve up (~25 s for a big tree)
+            # GTOpen reports GPU vs CPU only once it has set the solve up (~25 s for a big tree).
+            # Wait for that, or for this chunk's first iteration: a resumed save already has
+            # iterations, so its count alone says nothing about the set-up being done
             t_wait = time.time()
             while True:
                 time.sleep(2)
                 st = srv.api("/api/preflop/status")
                 if (st["state"] != "running" or st.get("gpu") or st.get("gpu_note")
-                        or st.get("iteration", 0) > 0 or time.time() - t_wait > 300):
+                        or st.get("iteration", 0) > before or time.time() - t_wait > 300):
                     break
             if st["state"] == "running" and not st.get("gpu") and not allow_cpu:
                 srv.api("/api/preflop/stop", {})
@@ -409,8 +414,11 @@ class GtopenChart:
 
     def __init__(self, path):
         import numpy as np
-        self.z = np.load(path)
-        self.meta = json.loads(bytes(self.z["meta"]).decode())
+        # read it all (a few hundred KB) and close the file: Windows can't replace a file that is
+        # open, so a chart held open by a running HUD would make its re-export fail
+        with np.load(path) as z:
+            self.meta = json.loads(bytes(z["meta"]).decode())
+            self.z = {k: z[k] for k in z.files if k != "meta"}
         self.path = path
 
     def spot(self, key):

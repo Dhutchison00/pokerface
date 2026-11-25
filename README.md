@@ -189,6 +189,10 @@ preflop_hud/
   spot.py          positions, action so far, effective stack -> decision point
   solver.py        preflop CFR solver, game tree, postflop realisation model, solution cache
   solved.py        maps a detected spot to a solver node (or a live jam/fold solve)
+  tracker.py       rebuilds the hand's action from successive reads
+  postflop.py      live heads-up advice, flop to river: each street solved by GTOpen from its start
+  multiway.py      3-way pots: multiway preflop ranges, equity, the lean 3-way turn/river spots
+  gtopen.py        GTOpen preflop solves, exports and the chart store
   strategy.py      chart dispatch + the approximate fallback model
   overrides.py     your range files
   equity.py        169x169 preflop equity table (Monte Carlo, cached in data/)
@@ -235,7 +239,7 @@ tables without giving advice. It comes back when you stop. Replay a recording th
 ```
 
 Add `--reread` to read the saved frames again (after a reader change). Recordings are git-ignored;
-they're the test data for the tracker, and the basis for postflop solving next.
+they're the test data for the tracker and the postflop advice.
 
 ## Tournament or cash
 
@@ -289,6 +293,89 @@ cargo build --release -p server --features gpu
   solver. With `--limp` those come from GTOpen too, but the tree is roughly 7–15× larger (8-handed
   60 bb: 1.65M nodes, about 6 s per iteration on an RTX 5070 Ti).
 - The checkpoints and logs live in GTOpen's `saves/preflop/` folder.
+
+## Live postflop advice
+
+From the flop to the river, while you're heads-up (neither player all-in), the left panel switches
+from the preflop chart to advice for your exact hand: how often to take each action, how much each
+action loses against the best one (EV loss, in bb), your equity, and how the whole range plays the
+spot. It needs GTOpen built (see the section below), with `"gtopen_dir"` in `config.json`.
+
+1. **Flop ranges** come from the preflop line the tracker saw: each player's range is their own reach
+   at their last preflop decision times how often they took the action they took, from the same
+   charts the HUD shows preflop (GTOpen exports first, else the HUD solver's cache). Lines covered:
+   open + call, open + 3-bet + call, SB limp + BB check, SB limp + BB raise + SB call, and a limp from
+   any other seat that's checked by the BB or iso-raised and called heads-up. The charts almost never
+   limp outside the SB (0.2% of hands or less at 10–35bb, up to ~3% at 100bb), so the solver's nodes
+   after such a limp aren't converged: the limper's range is assumed to be its open-raise range, an
+   iso-raise the raiser's open range (the BB's: its range against an SB limp), noted on the panel.
+2. **Turn and river ranges** carry the betting so far: each street is solved on its own, from its
+   start, and each player's range for the next street is their reach at the end of the previous
+   street's solved tree, combo by combo. Re-solving from each street's start gives the same answers
+   as the full flop tree (checked on a recorded turn: your hand 99.7% vs 99.4% check, the range 35%
+   vs 37%), at the real pot and stacks. A player who takes a line the solver almost never takes
+   (under 2% of their range) keeps the range they had before it, noted; so does your hand if it's
+   nearly gone from your range.
+3. **The spot** is the board so far, plus the pot and stacks the street started with (medians over
+   several reads, taken before that street's bets go in). Flop trees bet 33% or 75% of the pot
+   (75% on later streets), raise 60% (of the pot after calling), and treat anything within 85% of
+   the stack as all-in. Deep flops (stacks 4.5× the pot or more, or a tree over 6 GB of VRAM) use a
+   smaller menu, one 33% flop bet and all-in turn/river raises, to answer in seconds (noted). Turn-
+   and river-rooted trees are tiny (thousands of nodes), so they bet 33% or 75% (and all-in on the
+   river), raise 60% or all-in, allow four raises, and let the player out of position lead into the
+   last street's bettor. Cash mode applies the rake; tournaments are chip EV postflop for now (noted
+   in ICM mode).
+4. **Real bet sizes**: a bet or raise that isn't in the menu (more than 15% from its nearest size, like
+   the bots' 12% and 25% bets) is added to that street's menu and the street solved again, noted. The
+   first tree's answer, with the bet mapped to its nearest size, shows meanwhile, marked as
+   re-solving. Turn and river re-solves take a fraction of a second; a flop one, a couple.
+5. **Solving** starts the moment a street's first card shows, on a gto-server of the HUD's own (port
+   3741, started while preflop is played). In the HUD loop on recorded hands, on an RTX 5070 Ti: a
+   flop answer about 2 s after the flop in a raised pot (6 s in a deep limped pot, first at 2.5% of
+   the pot from equilibrium, refined to 0.3% while you look, "refining…"); turn and river answers
+   0.5–1.5 s after their card. The panel shows "Solving the turn…" (etc.) until then, and the
+   iterations, accuracy and GPU/CPU underneath.
+6. **Your decision**: the HUD follows the street's logged actions down its solved tree to your
+   decision. If your hand is almost never in your range on that line, it's kept in at a small weight
+   and noted.
+
+### 3-way and bigger pots
+
+GTOpen's three-player solver (beta) is used where it answers live, and your equity everywhere else.
+
+- **Ranges**: the charts have no multiway nodes, so each player's range comes from their own heads-up
+  node against the first raiser: the opener's open, a caller's call against that open (an overcall is
+  its call against a lone open), limpers and iso-raisers as in heads-up limped pots. All noted. 3-bet
+  multiway pots aren't covered.
+- **The flop**: your equity against every player's range (Monte Carlo, card removal between all hands,
+  seeded so it holds still), and the pot odds when you face a bet. A 3-way flop is far too big to solve
+  live on one GPU: with one bet size, 2.7M nodes needing 14 GB, still 4.6% of the pot from equilibrium
+  after ten minutes.
+- **The turn**, when the flop was checked through by everyone: solved 3-way from the turn's start, with
+  one bet size (75%) and all-in raises (75% and all-in on the river inside it), a first answer in about
+  3 s at 18bb. The flop's checking ranges are taken as the preflop ranges, which is rough: on a
+  heads-up test turn, skipping a checked flop's narrowing made the range bet about half as often as it
+  should (your own hand's advice there was the same). Noted on the panel.
+- **The river** after such a turn: each player's range is read from the turn's solved tree (where they
+  first act on the river). Still 3-way: solved with 33%, 75% and all-in bets, in about a second. A
+  player folded the turn: solved heads-up, from the same ranges.
+- **A reduced-tree range estimator** for 3-way flops is built but off (`ESTIMATOR_LIVE` in
+  `multiway.py`): a 3-way flop with one bet size and the turn and river checked down solves in ~3 s,
+  but heads-up, where the full flop tree is solvable, that reduction gave ranges further from the full
+  tree's than no narrowing at all (checking ranges come out capped when the flop is the only street to
+  bet a strong hand), and one turn bet size didn't fix it. `python -m preflop_hud.validate_multiway`
+  checks it against full 3-way flop solves on synthetic hands (hours of GPU, and ~8 GB of free RAM per
+  reference tree: run it overnight with other programs closed).
+- **Everything else** shows your equity with the reason: a flop that was bet, side pots (a player
+  all-in), 4-way pots. Equity against ranges that the betting since hasn't narrowed is likely higher
+  than your real equity, and the panel says so; it isn't a call-or-fold verdict (more bets can follow).
+  3-way advice gives each action's frequency but no EV loss (the 3-way solver doesn't report per-action
+  EVs).
+
+Shown instead of advice, with the reason: preflop lines not covered above (over-limps, limp-reraises,
+4-bets, cold calls), hands where tracking started after the preflop action, pots where you're all-in
+or nobody with chips is left to bet against you, and an unread hole-card suit. Advice is off while
+recording, as everywhere.
 
 ## Troubleshooting
 

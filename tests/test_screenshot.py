@@ -334,7 +334,36 @@ assert hq2["ranks"] == ["Q", "2"] and hq2["suits"] == ["h", "s"] and hq2["suited
 reader_mod._seen_four_color = False
 ha2 = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_ah2h_red_rec.png"))).hero_cards
 assert ha2["ranks"] == ["A", "2"] and ha2["colors"] == ["red", "red"], ha2
-print("hole-card ranks OK: Q6s read, red/blue overlap offsuit, 2/7 by shape")
+# recorded at 1900px wide: the black 7 is narrow enough for the recogniser to rate "1" (=10) just
+# above "7", and text OCR returns the board's tall Q as a lowercase "a" (was read 7 -> T, Q -> A)
+t77 = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_7s7c_board_qckd8c.png")))
+assert t77.hero_cards["ranks"] == ["7", "7"], t77.hero_cards
+assert [(c["rank"], c["suit"]) for c in t77.board] == [("Q", "c"), ("K", "d"), ("8", "c")], t77.board
+# a blue 7 half-covered by the next card (a 3): the same 7 -> T misread, on a diamond
+t73 = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_7d3s_board_8d9s8c.webp")))
+assert t73.hero_cards["ranks"] == ["7", "3"] and t73.hero_cards["suits"] == ["d", "s"], t73.hero_cards
+assert [(c["rank"], c["suit"]) for c in t73.board] == [("8", "d"), ("9", "s"), ("8", "c")], t73.board
+# the app's 6-seat table: side seats sit low, beside the bottom of the felt (an 8-seat anchor misses them).
+# The HUD's own annotated view, so its drawn boxes clip a FOLD label; the seats are what's checked here
+t6 = read_table(cv2.imread(os.path.join(ROOT, "samples", "table6_annotated_left_right_seats.webp")))
+assert len(t6.seats) == 6 and [s.idx for s in t6.seats if s.present] == [0, 1, 2, 4, 5], [s.present for s in t6.seats]
+assert t6.seats[1].stack == 47.3 and t6.seats[1].has_cards and t6.seats[5].stack == 49.6 and t6.button_seat == 5
+# rank templates (an alternative to the recogniser, not wired in: on the recordings it ties with it)
+from preflop_hud import rank_templates as rt  # noqa: E402
+from preflop_hud.layout import DEFAULT_LAYOUT as _L  # noqa: E402
+_img = cv2.imread(os.path.join(ROOT, "samples", "hero_7s7c_board_qckd8c.png"))
+_felt = reader_mod.find_felt(_img, _L)
+_hero = [rt.classify(m) for _, m in rt._hero_glyphs(_img, _felt, _L)]
+_board = [rt.classify(m) for _, m in rt._board_glyphs(_img, _felt, _L)]
+assert [r for r, _, _ in _hero] == ["7", "7"] and [r for r, _, _ in _board] == ["Q", "K", "8"], (_hero, _board)
+assert all(mg >= rt.MIN_MARGIN for _, _, mg in _hero + _board), (_hero, _board)
+one = np.full((64, 60, 3), 255, np.uint8)               # one shape can't be a "10"
+cv2.line(one, (30, 12), (30, 52), (0, 0, 0), 6)
+two = one.copy()
+cv2.ellipse(two, (48, 32), (8, 20), 0, 0, 360, (0, 0, 0), 5)
+assert reader_mod._ink_blobs(one) == 1 and reader_mod._ink_blobs(two) == 2
+assert reader_mod._lowercase_word("a") and not reader_mod._lowercase_word("A")     and not reader_mod._lowercase_word("10")
+print("hole-card ranks OK: Q6s read, red/blue overlap offsuit, 2/7 by shape, narrow 7, tall Q on the board")
 
 # red ink straddles OpenCV's hue wrap (0..180): split red pixels plus a few anti-aliased in-between
 # hues used to give a median of ~81 (green) or ~95 (blue): a 2 of hearts read as clubs
@@ -382,6 +411,25 @@ print("live ticks:", statuses)
 assert statuses[1] == ("live", ["BTN", "SB", "BB"]), statuses
 assert statuses[3] == ("live", ["SB", "BB"]), statuses
 assert statuses[4] == ("live", ["SB", "BB"]), statuses
+# the read taken while the screen moved isn't trusted once it holds still: the settled frame is read
+# again (a card's last fade-in frames look unchanged on the thumbnail and once read a 4 as a 10); a
+# still screen is skipped, then read again every REREAD_SECS
+import time  # noqa: E402
+app3 = server.App()
+app3.cfg = {}
+app3._frame = lambda: img
+parses = []
+real_parse = app3._parse
+app3._parse = lambda im, settled=False: parses.append(settled) or real_parse(im, settled)
+app3.tick()                         # first read: pending
+app3.tick()                         # still: the settled frame is read again and accepted
+assert parses == [False, True] and app3.state["status"] == "live", (parses, app3.state["status"])  # the settled read
+app3.tick()
+assert len(parses) == 2                                         # still and fresh: no OCR
+app3._last_parse_t -= server.REREAD_SECS + 0.1
+app3.tick()
+assert len(parses) == 3 and app3.state["status"] == "live"      # still for a while: read again
+print("settle re-read and still-screen re-read OK")
 # a FOLD-label-sized change must register as a change
 small_change = img.copy()
 small_change[355:378, 1335:1395] = 200

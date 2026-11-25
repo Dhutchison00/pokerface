@@ -30,6 +30,7 @@ from .strategy import Engine
 from .tracker import Tracker, observe
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REREAD_SECS = 3.0       # a still screen is read again this often (a misread never sticks for long)
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 CONFIG = os.path.join(ROOT, "config.json")
 
@@ -42,9 +43,16 @@ def load_config():
         return {}
 
 
-def save_config(cfg):
+def save_config(updates):
+    """Write only these keys into config.json, keeping everything else on disk.
+
+    Re-reads the file first, so a long-running HUD never drops keys added by hand
+    (e.g. "gtopen_dir") after it started."""
+    cfg = load_config()
+    cfg.update(updates)
     with open(CONFIG, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+    return cfg
 
 
 def _jsonable(o):
@@ -63,11 +71,16 @@ NO_ADVICE = {"actions": [], "freqs": None, "approx": False, "title": "Recording 
              "method": "No charts or advice while recording: the table is only read, tracked and saved"}
 
 
-def _signature(spot, hero_class):
+def _signature(spot, hero_class, hand=None):
     v = spot.get("villain") or {}
-    return json.dumps([spot.get("type"), spot.get("street"), spot.get("hero_pos"), round(spot.get("eff_bb") or 0, 1),
-                       v.get("pos"), v.get("bet"), spot.get("n_players"), hero_class,
-                       [p["pos"] for p in spot.get("behind", [])]])
+    sig = [spot.get("type"), spot.get("street"), spot.get("hero_pos"), round(spot.get("eff_bb") or 0, 1),
+           v.get("pos"), v.get("bet"), spot.get("n_players"), hero_class,
+           [p["pos"] for p in spot.get("behind", [])]]
+    if spot.get("type") == "POSTFLOP" and hand:
+        # postflop advice follows the hand's actions, not just the street
+        sig += [hand.get("id"), hand.get("hero"), hand.get("hero_turn"), hand.get("in_hand"),
+                [(a["seat"], a["action"], a["to"]) for a in hand.get("actions", []) if a["street"] != "preflop"]]
+    return json.dumps(sig)
 
 
 class App:
@@ -93,11 +106,14 @@ class App:
         self._chart_pending = False
         self._last_resolve = 0.0
         self._last_small = None
+        self._last_parse_t = 0.0
         self._grabber = None
         self.selecting = False
         self.tracker = Tracker()             # the hand's action, rebuilt from every read
         self.recording = None                # folder while recording frames for the tracker's tests
         self._rec_n = 0
+        self.postflop = None                 # flop solver (started on the first heads-up flop)
+        self._pf_seen = 0
 
     # ------------------------------------------------------------ frame source
     def _frame(self):
@@ -128,7 +144,20 @@ class App:
             interval = min(self.interval, 0.25) if self.tracker.in_hand else self.interval
             time.sleep(max(0.05, interval - (time.time() - t0)))
 
+    def _postflop(self):
+        if self.postflop is None:
+            from .postflop import PostflopEngine
+            if self.engine.solved is None:
+                from .solved import SolvedCharts
+                self.engine.solved = SolvedCharts()
+            self.postflop = PostflopEngine(self.engine.solved.node, gtopen_dir=self.cfg.get("gtopen_dir"))
+        return self.postflop
+
     def tick(self):
+        # a flop solve (or a node of it) landed since the last frame: refresh the advice
+        if self.postflop is not None and self.postflop.version != self._pf_seen and not self.recording                 and self._last_data is not None and self._last_data["spot"].get("type") == "POSTFLOP":
+            self._pf_seen = self.postflop.version
+            self._accept(self._last_data, force=True)
         img = self._frame()
         if img is None:
             self._publish({"status": "no_region", "error": "No capture region yet: click “Select region”."},
@@ -142,14 +171,20 @@ class App:
         self._last_small = small
 
         if not changed and self.image is None:
-            if self._pending is None and self._accepted is not None:
+            stale = time.time() - self._last_parse_t > REREAD_SECS
+            if self._pending is None and self._accepted is not None and not stale:
                 # nothing new on screen: skip OCR, but upgrade a fallback chart once its solve lands
                 if self._chart_pending and self._last_data and time.time() - self._last_resolve > 2:
                     self._accept(self._last_data, force=True)
                 return
-            if self._pending is not None:   # screen held still since that read: confirmed
-                data, self._pending = self._pending, None
-                return self._accept(data)
+            if self._pending is not None:
+                # the screen held still since that read: read the settled frame again rather than
+                # trust a read taken while it moved. A card's last fade-in frames look unchanged on
+                # the thumbnail, and a rank read then can be wrong (a 4 read as a 10) and would stick
+                # until something else moved
+                self._pending = None
+                return self._accept(self._parse(img, settled=True))
+            # still for REREAD_SECS: read it again anyway (a new reading then settles as usual)
         data = self._parse(img)
         if self.image is not None or data["sig"] == self._accepted or \
                 (self._pending is not None and data["sig"] == self._pending["sig"]):
@@ -158,12 +193,14 @@ class App:
         self._pending = data                # new reading, wait for one confirming frame
         self._publish({"status": "settling", "table": data["table"], "parse_ms": data["ms"]}, keep_chart=True)
 
-    def _parse(self, img):
+    def _parse(self, img, settled=False):
         t0 = time.time()
+        self._last_parse_t = t0
         lay = self.cfg.get("layout")
         st = read_table(img, lay)
         spot = derive_spot(st)
         obs = observe(st, spot)
+        obs["settled"] = settled             # read once the screen stopped changing: trusted over a moving read
         hand = self.tracker.update(obs)      # every read, settled or not: bots can act between them
         if self.recording:
             self._record(img, obs, hand)
@@ -189,7 +226,7 @@ class App:
             "error": st.error, "ocr_device": reader_mod.OCR_DEVICE, "board": st.board, "hand": hand,
         }
         return {"spot": spot, "hc": hc, "hero_class": hero_class, "table": table,
-                "sig": _signature(spot, hero_class), "ms": int((time.time() - t0) * 1000)}
+                "sig": _signature(spot, hero_class, hand), "ms": int((time.time() - t0) * 1000)}
 
     def _accept(self, data, force=False):
         spot, hero_class, hc = data["spot"], data["hero_class"], data["hc"]
@@ -205,6 +242,18 @@ class App:
             self._publish({"status": "live", "table": data["table"], "spot": spot, "chart": NO_ADVICE,
                            "hero": None, "parse_ms": data["ms"]})
             return
+        if spot.get("type") == "POSTFLOP":
+            # heads-up flops: solved live by GTOpen from the tracked hand (never while recording, above)
+            chart = self._postflop().advise(self.tracker.state(), self.engine.game)
+            self._accepted = data["sig"]
+            # still solving (or waiting for preflop charts): re-advise every 2 s even if nothing moves
+            self._chart_pending = bool(chart.get("pending_solver"))
+            self._last_resolve = time.time()
+            self._publish({"status": "live", "table": data["table"], "spot": spot, "chart": chart, "hero": None,
+                           "parse_ms": data["ms"]})
+            return
+        if self.tracker.in_hand:
+            self._postflop().warm()          # the flop solver's server comes up while preflop is played
         chart = self.overrides.find(spot) if spot.get("eff_bb") else None
         if chart is None:
             chart = self.engine.solve(spot)
@@ -278,7 +327,7 @@ class App:
         game = modes.normalize(dict(self.engine.game, **(update or {})))
         self.engine.game = game
         self.cfg["game"] = {k: v for k, v in game.items()}
-        save_config(self.cfg)
+        save_config({"game": self.cfg["game"]})
         data = self._last_data
         if data is not None:
             self._accepted = None             # the chart depends on the mode: re-solve the current spot
@@ -300,7 +349,7 @@ class App:
             if not data or data.get("cancelled"):
                 return {"ok": False, "cancelled": True}
             self.cfg["region"] = data
-            save_config(self.cfg)
+            save_config({"region": data})
             self._accepted = self._pending = self._last_small = None
             self.image = None
             return {"ok": True, "region": data}

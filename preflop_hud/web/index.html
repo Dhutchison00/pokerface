@@ -94,6 +94,20 @@
   #tip { position: fixed; pointer-events: none; background: #0b0d11; border: 1px solid var(--line);
     padding: 6px 9px; border-radius: 8px; font-size: 12px; display: none; z-index: 20; white-space: nowrap; }
   .err { color: var(--raise); font-size: 13px; margin-top: 8px; }
+  /* postflop advice */
+  #postflop { margin-top: 12px; }
+  #postflop .msg { font-size: 15px; margin: 6px 0 10px; }
+  #postflop .msg.wait { color: var(--muted); }
+  #postflop table td { vertical-align: middle; }
+  #postflop .bar { height: 10px; border-radius: 5px; background: #262b35; overflow: hidden; min-width: 30px; }
+  #postflop td:first-child { white-space: nowrap; }
+  @media (max-width: 560px) { #postflop .barcol { display: none; } }
+  .card { min-width: 0; }
+  .title { overflow-wrap: anywhere; }
+  #postflop .bar span { display: block; height: 100%; }
+  #postflop tr.top td { font-weight: 700; }
+  #postflop .num { text-align: right; white-space: nowrap; }
+  #postflop .eqline { font-size: 17px; margin: 4px 0 6px; }
 </style>
 </head>
 <body>
@@ -122,6 +136,7 @@
     <div class="sub"><span id="method"></span><span id="badge"></span></div>
     <div id="grid"></div>
     <div class="legend" id="legend"></div>
+    <div id="postflop"></div>
   </section>
 
   <section class="stack">
@@ -180,12 +195,61 @@ function labelFor(chart, a) {
   return LABELS[a] || a;
 }
 
+const KIND_COLORS = { check: "var(--check)", call: "var(--call)", fold: "var(--fold)", bet: "var(--raise)", raise: "var(--raise)" };
+function kindColor(row) { return /^all-in/i.test(row.label) ? "var(--allin)" : (KIND_COLORS[row.kind] || "var(--muted)"); }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function renderPostflop(pf) {
+  const el = document.getElementById("postflop");
+  if (!pf) { el.innerHTML = ""; return; }
+  const pr = pf.progress || {};
+  const solve = pr.iteration ? `solved ${pr.iteration} iterations · ${(+pr.exploit_pct).toFixed(2)}% of the pot from equilibrium` +
+    ` · ${pr.gpu ? "GPU" : "CPU"}${pr.secs != null ? ` · ${pr.secs}s` : ""}${pf.refining ? " · refining…" : ""}` : "";
+  let html = "";
+  const a = pf.advice;
+  if (a) {
+    const best = a.actions.reduce((m, r) => (r.freq > m.freq ? r : m), a.actions[0]);
+    html += `<table><thead><tr><th>Your ${esc(a.hand)}</th><th class="barcol"></th><th class="num">How often</th><th class="num">EV loss</th><th class="num" title="How often the whole range takes this action here">Range</th></tr></thead><tbody>`;
+    a.actions.forEach(r => {
+      html += `<tr class="${r === best ? "top" : ""}"><td>${esc(r.label)}</td>` +
+        `<td class="barcol" style="width:35%"><div class="bar"><span style="width:${(r.freq * 100).toFixed(1)}%;background:${kindColor(r)}"></span></div></td>` +
+        `<td class="num">${Math.round(r.freq * 100)}%</td>` +
+        `<td class="num">${r.ev_loss == null ? "–" : r.ev_loss <= 0.005 ? "best" : "−" + r.ev_loss.toFixed(2) + " bb"}</td>` +
+        `<td class="num">${Math.round(r.range_freq * 100)}%</td></tr>`;
+    });
+    html += "</tbody></table>";
+    html += `<div class="sub" style="margin-top:6px">Equity ${a.equity == null ? "–" : Math.round(a.equity * 100) + "%"}` +
+      ` · EV loss: how much less each action wins than the best one</div>`;
+  } else {
+    const cls = pf.status === "solving" || pf.status === "waiting" ? "msg wait" : "msg";
+    html += `<div class="${cls}">${esc(pf.message || "")}</div>`;
+    const e = pf.equity;
+    if (e && e.equity != null) {
+      // no solver strategy here (3-way flops, bet multiway pots): your share of the pot at showdown
+      html += `<div class="eqline">Your ${esc(e.hand || "hand")}: <b>${Math.round(e.equity * 100)}%</b> equity ` +
+        `against ${e.players} player${e.players === 1 ? "" : "s"}</div>`;
+      if (e.to_call) html += `<div class="sub">To call ${e.to_call}bb into ${e.pot}bb you'd need ` +
+        `${Math.round(e.need * 100)}% at showdown (more bets can still follow)</div>`;
+    }
+  }
+  const info = [];
+  if (pf.line) info.push(`Preflop: ${esc(pf.line)}`);
+  if (pf.ranges) info.push(`Ranges: ${esc(pf.ranges)}`);
+  if (solve) info.push(esc(solve));
+  if (info.length) html += `<div class="sub" style="margin-top:8px">${info.join("<br>")}</div>`;
+  if (pf.notes && pf.notes.length) html += `<ul class="notes">${pf.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>`;
+  el.innerHTML = html;
+}
+
 function renderChart(chart, hero) {
-  const key = JSON.stringify([chart && chart.title, chart && chart.freqs, hero && hero.index]);
+  const key = JSON.stringify([chart && chart.title, chart && chart.freqs, hero && hero.index, chart && chart.postflop]);
   if (key === lastChartKey) return;
   lastChartKey = key;
   document.getElementById("chartTitle").textContent = chart ? chart.title : "No decision";
   document.getElementById("method").textContent = chart ? chart.method : "";
+  const pf = chart && chart.postflop;
+  grid.style.display = pf ? "none" : "";
+  renderPostflop(pf);
   const b = document.getElementById("badge");
   b.innerHTML = !chart || !chart.freqs ? "" : chart.override ? '<span class="badge override">your ranges</span>'
     : chart.source === "gtopen" ? '<span class="badge exact">GTOpen · learned flop values</span>'
@@ -225,6 +289,16 @@ function renderHero(st) {
   }
   const adv = document.getElementById("advice"), bar = document.getElementById("heroBar"), txt = document.getElementById("heroTxt");
   bar.innerHTML = ""; txt.textContent = "";
+  const pa = chart && chart.postflop && chart.postflop.advice;
+  if (pa) {
+    const rows = pa.actions.filter(r => r.freq > 0.005).sort((x, y) => y.freq - x.freq);
+    const top = rows[0];
+    adv.innerHTML = `${esc(pa.hand)}: <span style="color:${kindColor(top)}">${esc(top.label)}</span>` +
+      (top.freq < 0.995 ? ` <span class="sub">${Math.round(top.freq * 100)}%</span>` : "");
+    rows.forEach(r => bar.insertAdjacentHTML("beforeend", `<span style="width:${r.freq * 100}%;background:${kindColor(r)}"></span>`));
+    txt.textContent = rows.map(r => `${r.label} ${Math.round(r.freq * 100)}%`).join(" · ");
+    return;
+  }
   if (!hero || !chart || !chart.freqs) {
     adv.textContent = t.hero_class ? t.hero_class : "–";
     return;

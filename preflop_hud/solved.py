@@ -176,6 +176,23 @@ class SolvedCharts:
             return None, "spot isn't in the solver tree (multiway / squeeze / limp-raise)"
         return self._grid_chart(spot, game, key)
 
+    def node(self, n, eff, dead, game, key):
+        """One preflop node's strategy and own reach, for building postflop ranges: the GTOpen
+        export of this game type when there is one, else the HUD solver's cache.
+        Returns (node dict, source text) or (None, reason)."""
+        game = modes.normalize(game)
+        gt = self.gtopen.get(n, SolverStore.grid_stack(eff), dead, modes.gtopen_tag(game))
+        d = gt.spot(key) if gt else None
+        if d is not None:
+            return d, f"GTOpen {gt.meta['stack']}bb preflop charts"
+        sol, msg = self._store(game).get(n, eff, dead)
+        if sol is None:
+            return None, msg
+        d = sol.spot(key)
+        if d is None:
+            return None, f"{key} isn't reachable in the {sol.meta['stack']}bb preflop tree"
+        return d, f"HUD solver {sol.meta['stack']}bb preflop charts"
+
     def _grid_chart(self, spot, game, key, gtopen_only=False):
         """Chart from a precomputed grid point: a GTOpen export of this game type when there is one,
         else the HUD solver's cache (solved in the background when missing)."""
