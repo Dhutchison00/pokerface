@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 
@@ -168,6 +169,7 @@ class TableState:
     sb_seat: int | None = None
     bb_seat: int | None = None
     hero_cards: dict | None = None
+    board: list = field(default_factory=list)   # community cards, left to right: {rank, suit, color}
     to_call_hint: float | None = None   # from the "Call X" action button
     hero_buttons: list = field(default_factory=list)
     felt: list | None = None
@@ -183,14 +185,27 @@ class TableState:
 
 # ----------------------------------------------------------------- detectors
 def find_felt(img, lay):
+    """Bounding box of the felt: the largest blob of any of the felt colours (green, then the
+    other themes in "felt_hsv_extra", e.g. the red table). Each colour is a list of HSV ranges
+    (red wraps around hue 0, so it takes two)."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    m = cv2.inRange(hsv, tuple(lay["felt_hsv_lo"]), tuple(lay["felt_hsv_hi"]))
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    n, _, st, _ = cv2.connectedComponentsWithStats(m)
-    if n < 2:
+    colours = [[(lay["felt_hsv_lo"], lay["felt_hsv_hi"])]] + [
+        [tuple(r) for r in c] for c in lay.get("felt_hsv_extra", [])]
+    best = None
+    for ranges in colours:
+        m = np.zeros(hsv.shape[:2], np.uint8)
+        for lo, hi in ranges:
+            m |= cv2.inRange(hsv, tuple(lo), tuple(hi))
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        n, _, st, _ = cv2.connectedComponentsWithStats(m)
+        if n < 2:
+            continue
+        i = 1 + int(np.argmax(st[1:, 4]))
+        if best is None or st[i, 4] > best[4]:
+            best = st[i]
+    if best is None:
         return None
-    i = 1 + int(np.argmax(st[1:, 4]))
-    x, y, w, h, area = st[i]
+    x, y, w, h, area = best
     if area < 0.05 * img.shape[0] * img.shape[1]:
         return None
     return int(x), int(y), int(w), int(h)
@@ -234,7 +249,11 @@ def _ink_color(hsv, mask):
     colored = mask & (hsv[..., 1] > 90) & (hsv[..., 2] > 70)
     dark = mask & (hsv[..., 2] < 100)
     if colored.sum() > dark.sum():
-        hue = float(np.median(hsv[..., 0][colored]))
+        # circular mean: red sits at both ends of OpenCV's 0..180 hue scale, and a plain median of
+        # a red glyph's pixels (some near 0, some near 180, a few in between) can land on green
+        # or blue: a 2 of hearts read as clubs, a 5 of hearts as diamonds
+        ang = hsv[..., 0][colored].astype(np.float64) * (np.pi / 90.0)
+        hue = float(np.degrees(np.arctan2(np.sin(ang).mean(), np.cos(ang).mean())) / 2.0) % 180.0
         if 35 < hue < 90:
             return "green"
         if 90 <= hue <= 135:
@@ -251,6 +270,7 @@ def _suit_info(card_img, rank_box, scale):
     next blob down is the pip.
     """
     (x0, y0), (x1, y1) = rank_box
+    box_x0, box_x1 = x0, x1                 # this card's own glyph lies within these columns
     # strip size from the glyph height too: OCR boxes around a narrow glyph ("J", "1") can be
     # tight horizontally (and differ between CPU and GPU runs), which would cut the pip off
     w = max(x1 - x0, 0.75 * (y1 - y0))
@@ -278,10 +298,25 @@ def _suit_info(card_img, rank_box, scale):
     if not comps:
         return None
     comps.sort(key=lambda k: st[k, 1])
-    top = st[comps[0], 1]
-    rank_c = [k for k in comps if st[k, 1] < top + 0.3 * st[comps[0], 3]]
+
+    def cx(k):
+        return sx0 + st[k, 0] + st[k, 2] / 2      # blob centre, in card_img columns
+
+    # the rank glyph is the top ink lined up with this card's OCR box: with overlapping hole cards
+    # the next card's rank sits at the same height in the strip (a blue 4 beside a red 5) and
+    # would otherwise lend the 5 its colour
+    margin = 0.15 * (box_x1 - box_x0)
+    own = [k for k in comps if box_x0 - margin <= cx(k) <= box_x1 + margin] or comps
+    top_k = own[0]
+    top = st[top_k, 1]
+    rank_c = [k for k in own if st[k, 1] < top + 0.3 * st[top_k, 3]]
     rank_bottom = max(st[k, 1] + st[k, 3] for k in rank_c)
-    below = [k for k in comps if st[k, 1] >= rank_bottom - 2]
+    gx0 = min(st[k, 0] for k in rank_c)
+    gx1 = max(st[k, 0] + st[k, 2] for k in rank_c)
+    gw = gx1 - gx0
+    # the pip: the next ink down, under this glyph (not the neighbouring card's)
+    below = [k for k in comps if st[k, 1] >= rank_bottom - 2
+             and gx0 - 0.5 * gw <= st[k, 0] + st[k, 2] / 2 <= gx1 + 0.5 * gw]
     color = _ink_color(hsv, np.isin(lab, rank_c))
     if not below:
         return {"color": color, "pip": None, "fill": None, "suit": None}
@@ -341,6 +376,163 @@ def decide_suited(suits, four_color: bool) -> bool | None:
     return bool(iou > 0.72)
 
 
+# ----------------------------------------------------------------- rank glyphs
+RANK_CHARS = "AKQJT98765432"
+
+
+def _glyph_mask(bgr):
+    """The rank glyph in a region around one OCR box: ink (saturated, or dark against the card face)
+    that doesn't touch the region's edge (card borders, felt), keeping the biggest blob plus blobs
+    of similar height beside it ("10" is two). Bool mask cropped to the glyph, or None."""
+    if bgr is None or bgr.size == 0:
+        return None
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    v = hsv[..., 2].astype(float)
+    pale = hsv[..., 1] < 50
+    face_v = np.percentile(v[pale], 90) if pale.sum() > 10 else 255.0
+    ink = (hsv[..., 1] > 80) | (v < 0.62 * face_v)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8))
+    H, W = ink.shape
+    inner = [k for k in range(1, n) if st[k, 0] > 0 and st[k, 1] > 0
+             and st[k, 0] + st[k, 2] < W and st[k, 1] + st[k, 3] < H and st[k, 4] > 8]
+    if not inner:
+        return None
+    big = max(inner, key=lambda k: st[k, 4])
+    by, bh = st[big, 1], st[big, 3]
+    keep = [k for k in inner if st[k, 3] > 0.6 * bh and abs(st[k, 1] - by) < 0.25 * bh]
+    x0, y0 = min(st[k, 0] for k in keep), min(st[k, 1] for k in keep)
+    x1 = max(st[k, 0] + st[k, 2] for k in keep)
+    y1 = max(st[k, 1] + st[k, 3] for k in keep)
+    return np.isin(lab, keep)[y0:y1, x0:x1]
+
+
+def _glyph_image(mask):
+    """Black-on-white, ~40px tall, padded: what the recogniser reads best for a single glyph."""
+    g = np.where(mask, 0, 255).astype(np.uint8)
+    g = cv2.resize(g, None, fx=40 / g.shape[0], fy=40 / g.shape[0], interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(cv2.copyMakeBorder(g, 12, 12, 16, 16, cv2.BORDER_CONSTANT, value=255), cv2.COLOR_GRAY2BGR)
+
+
+def _decode_rank(glyph_bgr):
+    """Read one glyph with the OCR recogniser restricted to rank characters (A K Q J 10 9..2), so an
+    unusual glyph (this app's tall Q) can't come out as "n" or "?". Returns a rank or None."""
+    rec = get_ocr().text_rec
+    chars = rec.postprocess_op.character
+    h, w = glyph_bgr.shape[:2]
+    norm = rec.resize_norm_img(glyph_bgr, max(320 / 48, w / h))      # as rapidocr: room for "10"
+    preds = rec.session(norm[None].astype(np.float32))[0][0]          # (time, classes)
+    allowed = [0] + [i for i, c in enumerate(chars) if c in "AKQJ1098765432"]   # 0 = CTC blank
+    sub = preds[:, allowed]
+    idx = sub.argmax(1)
+    out, prev = [], 0
+    for k in idx:
+        if k != 0 and k != prev:
+            out.append(chars[allowed[k]])
+        prev = k
+    if not out:                    # nothing beat "blank": the most likely rank character
+        j = int(np.unravel_index(sub[:, 1:].argmax(), sub[:, 1:].shape)[1]) + 1
+        out = [chars[allowed[j]]]
+    s = "".join(out)
+    if s.startswith("1"):
+        return "T"
+    if s[:1] == "0":               # no 0 rank: a lone 0 is a Q
+        return "Q"
+    return s[:1] if s[:1] in RANK_CHARS else None
+
+
+def _fix_2_7(rank, mask):
+    """2 and 7 get confused; a 2 has a flat base, a 7 ends in a narrow stroke."""
+    if rank not in ("2", "7") or mask is None or mask.shape[0] < 6:
+        return rank
+    base = mask[int(0.85 * mask.shape[0]):, :]
+    cols = np.nonzero(base.any(axis=0))[0]
+    width = (cols.max() - cols.min() + 1) / mask.shape[1] if cols.size else 0.0
+    return "2" if width >= 0.55 else "7"
+
+
+def _hero_rank_glyphs(up):
+    """Rank glyphs of the hole cards found from the card faces, without OCR text detection (which
+    misses this app's red A and 2, and its tall Q): the face union is the white blob; the ranks
+    are the tallest ink blobs along its top edge ("10" = two blobs side by side). The suit pips
+    sit lower and are left out. Returns [(x0, y0, x1, y1, mask)] left to right."""
+    hsv = cv2.cvtColor(up, cv2.COLOR_BGR2HSV)
+    v = hsv[..., 2].astype(float)
+    pale = hsv[..., 1] < 45
+    if not pale.any():
+        return []
+    face_v = np.percentile(v[pale], 90)
+    face = (pale & (v > 0.80 * face_v)).astype(np.uint8)
+    face = cv2.morphologyEx(face, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(face)
+    if n < 2:
+        return []
+    k = 1 + int(np.argmax(st[1:, 4]))
+    fy, fh = st[k, 1], st[k, 3]
+    filled = np.zeros_like(face)
+    cnts, _ = cv2.findContours((lab == k).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(filled, cnts, -1, 1, -1)
+    ink = (filled > 0) & (face == 0) & ((hsv[..., 1] > 80) | (v < 0.62 * face_v))
+    m, l2, s2, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8))
+    cand = [j for j in range(1, m) if s2[j, 1] < fy + 0.35 * fh and s2[j, 3] >= 0.15 * fh and s2[j, 4] > 20]
+    if not cand:
+        return []
+    top = min(s2[j, 1] for j in cand)
+    gh = max(s2[j, 3] for j in cand if s2[j, 1] < top + 0.15 * fh)
+    cand = [j for j in cand if s2[j, 1] < top + 0.4 * gh and s2[j, 3] >= 0.55 * gh]   # the rank row
+    cand.sort(key=lambda j: s2[j, 0])
+    groups = []
+    for j in cand:
+        if groups and s2[j, 0] - max(s2[i, 0] + s2[i, 2] for i in groups[-1]) < 0.2 * gh:
+            groups[-1].append(j)
+        else:
+            groups.append([j])
+    out = []
+    for g in groups:
+        x0, y0 = min(s2[i, 0] for i in g), min(s2[i, 1] for i in g)
+        x1, y1 = max(s2[i, 0] + s2[i, 2] for i in g), max(s2[i, 1] + s2[i, 3] for i in g)
+        out.append((x0, y0, x1, y1, np.isin(l2, g)[y0:y1, x0:x1]))
+    return out
+
+
+def _find_other_rank(up, found):
+    """The second hole card's rank when OCR found only one: ink beside the found glyph, at its
+    height and of a similar size. Returns a rank entry like ocr_ranks' (x, rank, box, conf) or None."""
+    _, _, ((bx0, by0), (bx1, by1)), _ = found
+    h = by1 - by0
+    H, W = up.shape[:2]
+    ry0, ry1 = max(0, int(by0 - 0.25 * h)), min(H, int(by1 + 0.25 * h))
+    best = None
+    for side in ("left", "right"):
+        cx0, cx1 = (0, int(bx0 - 0.1 * h)) if side == "left" else (int(bx1 + 0.1 * h), W)
+        if cx1 - cx0 < 0.3 * h:
+            continue
+        band = up[ry0:ry1, cx0:cx1]
+        hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+        v = hsv[..., 2].astype(float)
+        pale = hsv[..., 1] < 50
+        face_v = np.percentile(v[pale], 90) if pale.sum() > 10 else 255.0
+        ink = (hsv[..., 1] > 80) | (v < 0.62 * face_v)
+        # felt shows through on the outer side of the cards: only ink with card face around it
+        ink &= cv2.dilate(pale.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
+        n, _, st, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8))
+        for k in range(1, n):
+            x, y, w, hh, a = st[k]
+            if not (0.6 * h <= hh <= 1.5 * h) or abs((ry0 + y) - by0) > 0.35 * h or a < 0.05 * w * hh:
+                continue
+            dist = (cx1 - (x + w)) if side == "left" else x        # distance from the found glyph
+            if best is None or dist < best[0]:
+                best = (dist, cx0 + x, ry0 + y, cx0 + x + w, ry0 + y + hh)
+    if best is None:
+        return None
+    _, gx0, gy0, gx1, gy1 = best
+    pad = 0.15 * (gy1 - gy0)
+    mask = _glyph_mask(up[max(0, int(gy0 - pad)):int(gy1 + pad), max(0, int(gx0 - pad)):int(gx1 + pad)])
+    if mask is None:
+        return None
+    r = _fix_2_7(_decode_rank(_glyph_image(mask)), mask)
+    return (gx0, r, ((gx0, gy0), (gx1, gy1)), 0.0) if r else None
+
+
 def read_hero_cards(img, felt, lay):
     fx, fy, fw, fh = felt
     u0, v0, u1, v1 = lay["hero_cards"]
@@ -359,23 +551,46 @@ def read_hero_cards(img, felt, lay):
 
     def ocr_ranks(im, s):
         res, _ = get_ocr()(im)
-        out = []
+        cands = []
         for box, txt, conf in res or []:
             t = _norm_text(txt).replace("O", "0").replace("I", "1")
-            t = {"10": "T", "1O": "T", "0": "Q"}.get(t, t)
-            if len(t) == 1 and t in "AKQJT98765432":
-                xs = [p[0] * scale / s for p in box]
-                ys = [p[1] * scale / s for p in box]
-                out.append((min(xs), t, ((min(xs), min(ys)), (max(xs), max(ys))), float(conf)))
-        out.sort()
-        dedup = []  # one rank per card
-        for r in out:
-            if dedup and abs(r[0] - dedup[-1][0]) < 0.1 * up.shape[1]:
+            if not t or len(t) > 2:
+                continue                       # labels such as "HIGH CARD"
+            r = {"10": "T", "1O": "T", "0": "Q"}.get(t, t)
+            r = r if len(r) == 1 and r in RANK_CHARS else None   # None: a glyph OCR couldn't read
+            xs, ys = [p[0] for p in box], [p[1] for p in box]
+            cands.append((min(xs) * scale / s, min(ys), r, (min(xs), min(ys), max(xs), max(ys)), float(conf)))
+        cands.sort()
+        groups = []                            # one box per card: boxes this close belong together
+        for c in cands:
+            if groups and c[0] - groups[-1][0][0] < 0.1 * up.shape[1]:
+                groups[-1].append(c)
+            else:
+                groups.append([c])
+        out = []
+        for g in groups:
+            # the rank rather than the suit pip under it: a readable rank first, then the top-most box
+            x, _, r, (bx0, by0, bx1, by1), conf = min(g, key=lambda c: (c[2] is None, c[1]))
+            if r is None or r in ("2", "7"):
+                pad = 0.12 * (by1 - by0)
+                mask = _glyph_mask(im[max(0, int(by0 - pad)):int(by1 + pad), max(0, int(bx0 - pad)):int(bx1 + pad)])
+                if r is None and mask is not None:
+                    r = _decode_rank(_glyph_image(mask))
+                r = _fix_2_7(r, mask)
+            if r is None:
                 continue
-            dedup.append(r)
-        return dedup[:2]
+            k = scale / s
+            out.append((x, r, ((bx0 * k, by0 * k), (bx1 * k, by1 * k)), conf))
+        return out[:2]
 
-    ranks = ocr_ranks(up, scale)
+    # first: the glyphs found from the card faces, each read by the rank-only recogniser
+    ranks = []
+    for (gx0, gy0, gx1, gy1, mask) in _hero_rank_glyphs(up):
+        r = _fix_2_7(_decode_rank(_glyph_image(mask)), mask)
+        if r:
+            ranks.append((gx0, r, ((gx0, gy0), (gx1, gy1)), 1.0))
+    if len(ranks) != 2:                  # fall back to OCR text detection
+        ranks = ocr_ranks(up, scale)
     if len(ranks) < 2:  # single glyphs are easy to miss: retry other scales / greyscale
         gray = cv2.cvtColor(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
         for s, src in ((2, crop), (4, crop), (3, gray)):
@@ -383,6 +598,12 @@ def read_hero_cards(img, felt, lay):
             if len(alt) == 2:
                 ranks = alt
                 break
+    if len(ranks) == 1:
+        # text detection can miss a glyph entirely (this app's tall Q): both ranks sit at the
+        # same height, so look beside the one we found for a glyph of the same size
+        other = _find_other_rank(up, ranks[0])
+        if other is not None:
+            ranks = sorted(ranks + [other])
     if len(ranks) < 2:
         return {"ranks": [r[1] for r in ranks], "complete": False}
     suits = [_suit_info(up, r[2], scale) for r in ranks]
@@ -404,6 +625,120 @@ def read_hero_cards(img, felt, lay):
         a, b = ("s", "c") if suits[0]["color"] == "black" else (suits[0]["suit"] or "h", None)
         b = b or ("d" if a == "h" else "h")
         out["suits"] = [a, a if suited else b]
+    return out
+
+
+RANK_FIX = {"10": "T", "1O": "T", "IO": "T", "LO": "T", "0": "Q", "O": "Q", "1": "T"}
+
+
+def _rank_token(txt):
+    t = _norm_text(txt).replace("I", "1")
+    t = RANK_FIX.get(t, t)
+    return t if len(t) == 1 and t in "AKQJT98765432" else None
+
+
+def _find_board_cards(hsv, felt_h):
+    """Card-face boxes (x0, y0, x1, y1) in a board crop, left to right; touching cards are split."""
+    face = ((hsv[..., 1] < 50) & (hsv[..., 2] > 185)).astype(np.uint8)
+    face = cv2.morphologyEx(face, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, _, st, _ = cv2.connectedComponentsWithStats(face)
+    cards = []
+    for k in range(1, n):
+        x, y, w, h, a = st[k]
+        if not (0.15 * felt_h < h < 0.40 * felt_h) or a < 0.45 * w * h:
+            continue                                   # not card-sized / not a solid face (logo text)
+        cw = 0.72 * h                                  # face width / height of these cards
+        if w < 0.5 * cw:
+            continue
+        gap = 0.07 * h
+        k_cards = max(1, int(round((w + gap) / (cw + gap))))
+        step = (w + gap) / k_cards
+        for j in range(k_cards):
+            cards.append((int(x + j * step), int(y), int(x + j * step + step - gap), int(y + h)))
+    cards.sort()
+    return cards[:5]
+
+
+def _rank_glyph(hsv_card):
+    """The rank glyph of one card as black-on-white, ~40px tall: the top ink blob(s) of the corner
+    ("10" is two blobs side by side), without the suit pip under it. None if there's no ink."""
+    ch, cw = hsv_card.shape[:2]
+    c = hsv_card[:int(0.5 * ch), :int(0.6 * cw)]
+    ink = (~((c[..., 1] < 60) & (c[..., 2] > 170))).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
+    comps = [k for k in range(1, n) if st[k, 4] > 0.01 * ink.size and st[k, 0] > 0 and st[k, 1] > 0]
+    if not comps:
+        return None
+    comps.sort(key=lambda k: st[k, 1])
+    top, h0 = st[comps[0], 1], st[comps[0], 3]
+    rank = [k for k in comps if st[k, 1] < top + 0.3 * h0]
+    x0, y0 = min(st[k, 0] for k in rank), min(st[k, 1] for k in rank)
+    x1 = max(st[k, 0] + st[k, 2] for k in rank)
+    y1 = max(st[k, 1] + st[k, 3] for k in rank)
+    g = np.where(np.isin(lab, rank), 0, 255).astype(np.uint8)[y0:y1, x0:x1]
+    if g.size == 0:
+        return None
+    g = cv2.resize(g, None, fx=40 / g.shape[0], fy=40 / g.shape[0], interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(cv2.copyMakeBorder(g, 12, 12, 16, 16, cv2.BORDER_CONSTANT, value=255),
+                        cv2.COLOR_GRAY2BGR)
+
+
+def read_board(img, felt, lay):
+    """Community cards: white faces in the middle of the felt. The rank comes from OCR, the suit
+    from the colour of the rank glyph (four-colour deck: red hearts, blue diamonds, green clubs,
+    black spades). Returns [{"rank", "suit", "color"}] left to right (rank None if unread)."""
+    fx, fy, fw, fh = felt
+    u0, v0, u1, v1 = lay.get("board", DEFAULT_LAYOUT["board"])
+    H, W = img.shape[:2]
+    x0, y0 = max(0, int(fx + u0 * fw)), max(0, int(fy + v0 * fh))
+    x1, y1 = min(W, int(fx + u1 * fw)), min(H, int(fy + v1 * fh))
+    crop = img[y0:y1, x0:x1]
+    if crop.size == 0:
+        return []
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    boxes = _find_board_cards(hsv, fh)
+    if not boxes:
+        return []
+    # one OCR pass over the board, upscaled so a single glyph is ~100px tall
+    card_h = boxes[0][3] - boxes[0][1]
+    scale = max(1.0, min(4.0, 300.0 / max(card_h, 1)))
+    up = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    tokens = [[] for _ in boxes]
+    for box, txt, conf in get_ocr()(up)[0] or []:
+        cx = np.mean([p[0] for p in box]) / scale
+        cy = np.mean([p[1] for p in box]) / scale
+        for i, (bx0, by0, bx1, by1) in enumerate(boxes):
+            if bx0 <= cx <= bx1 and by0 <= cy <= by0 + 0.5 * (by1 - by0):
+                tokens[i].append(_norm_text(txt).replace("I", "1"))
+
+    def pick(toks):
+        # "10" can come back split as "1" + "0", and a lone "0" is otherwise a misread Q
+        if any(t.startswith("1") for t in toks):
+            return "T"
+        return next((r for r in map(_rank_token, toks) if r), None)
+    ranks = [pick(t) for t in tokens]
+    out = []
+    for i, (bx0, by0, bx1, by1) in enumerate(boxes):
+        corner = (slice(by0, by0 + int(0.45 * (by1 - by0))), slice(bx0, bx0 + int(0.5 * (bx1 - bx0))))
+        if ranks[i] is None or ranks[i] in ("2", "7"):
+            # text detection misses some single glyphs: read the isolated rank glyph directly,
+            # restricted to rank characters; and settle 2 vs 7 by the glyph's base
+            g = _rank_glyph(hsv[by0:by1, bx0:bx1])
+            if g is not None:
+                mask = g[..., 0] < 128
+                ys, xs = np.nonzero(mask)
+                mask = mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if ys.size else None
+                if ranks[i] is None:
+                    ranks[i] = _decode_rank(g)
+                ranks[i] = _fix_2_7(ranks[i], mask)
+        h = hsv[corner]
+        ink = ~((h[..., 1] < 50) & (h[..., 2] > 185))
+        color = _ink_color(h, ink) if ink.any() else None
+        out.append({"rank": ranks[i], "color": color,
+                    "suit": {"red": "h", "blue": "d", "green": "c", "black": "s"}.get(color)})
+    if any(c["color"] in ("blue", "green") for c in out):
+        global _seen_four_color            # a blue or green board card proves a four-colour deck too
+        _seen_four_color = True
     return out
 
 
@@ -581,6 +916,13 @@ def read_table(img, layout=None, ocr_result=None) -> TableState:
     # ---- hero cards
     st.hero_cards = read_hero_cards(img, felt, lay)
     st.seats[0].has_cards = bool(st.hero_cards and st.hero_cards.get("ranks"))
+
+    # ---- community cards
+    try:
+        st.board = read_board(img, felt, lay)
+    except Exception as e:          # the board is display-only: never lose the table over it
+        st.board = []
+        print(f"board read failed: {type(e).__name__}: {e}", file=sys.stderr)
 
     # ---- blinds / button seats
     for s in st.seats:

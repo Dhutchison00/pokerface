@@ -1,6 +1,0 @@
-2026-11-24 16:25:10  built hud_v1_n8_s60_d1p00_limp: 1,653,394 nodes, 2235 MB
-2026-11-24 16:35:48  iteration 100: gap 0.2536 bb (target 0.02), chunk 637s, total 0.18 h, Standard GPU evaluation: cohorts require the native compact normalized batch32 plan -> checkpoint saved
-2026-11-24 16:46:46  iteration 200: gap 0.0617 bb (target 0.02), chunk 658s, total 0.36 h, Standard GPU evaluation: cohorts require the native compact normalized batch32 plan -> checkpoint saved
-2026-11-24 16:57:53  iteration 300: gap 0.0293 bb (target 0.02), chunk 668s, total 0.55 h, Standard GPU evaluation: cohorts require the native compact normalized batch32 plan -> checkpoint saved
-2026-11-24 17:06:11  iteration 375: gap 0.0199 bb (target 0.02), chunk 498s, total 0.68 h, Standard GPU evaluation: cohorts require the native compact normalized batch32 plan -> checkpoint saved
-2026-11-24 17:06:11  done: iteration 375, gap 0.0199 bb, per seat [0.0018, 0.0023, 0.0022, 0.003, 0.0021, 0.0015, 0.0038, 0.0034]

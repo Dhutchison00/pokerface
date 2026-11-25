@@ -80,6 +80,13 @@
   tr.out td { color: #5d6575; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; margin-top: 8px; }
   .kv div:nth-child(odd) { color: var(--muted); }
+  /* board: card-like tiles; the rank in the suit's colour (red hearts, blue diamonds, black spades, green clubs) */
+  .board { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .bcard { display: inline-flex; align-items: baseline; gap: 1px; min-width: 26px; justify-content: center;
+    padding: 1px 5px; border-radius: 4px; background: #f4f5f7; font-weight: 700; font-size: 14px; line-height: 1.3; }
+  .bcard .sym { font-size: 11px; }
+  .bcard.h { color: #d32f2f; } .bcard.d { color: #1565c0; } .bcard.s { color: #111; } .bcard.c { color: #1b873f; }
+  .bcard.unk { color: #8b93a3; }
   .notes { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
   .notes li.warn { color: var(--warn); }
   #frame { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: none; margin-top: 10px; }
@@ -105,6 +112,7 @@
   <span class="sub" id="rakeTxt"></span>
   <button class="primary" id="btnRegion" title="Drag a box around the poker table">Select region</button>
   <button id="btnPause">Pause</button>
+  <button id="btnRecord" title="Save every read (frame + tracked action) to recordings/. Advice is off while recording: no charts, no hand advice, no solving">Record</button>
   <button id="btnFrame">Show capture</button>
 </header>
 
@@ -236,6 +244,20 @@ function renderHero(st) {
     (hero.suit_unsure ? " · suits unclear, assumed offsuit" : "");
 }
 
+const SUIT_SYMBOL = { h: "♥", d: "♦", s: "♠", c: "♣" };
+const SUIT_NAME = { h: "hearts", d: "diamonds", s: "spades", c: "clubs" };
+
+function boardHtml(board) {
+  if (!board.length) return '<span class="sub">none (preflop)</span>';
+  return '<span class="board">' + board.map(c => {
+    const rank = c.rank === "T" ? "10" : (c.rank || "?");
+    const suit = SUIT_SYMBOL[c.suit] || "";
+    const cls = c.suit && c.rank ? c.suit : (c.suit || "unk");
+    const title = `${rank} of ${SUIT_NAME[c.suit] || "unknown suit"}`;
+    return `<span class="bcard ${cls}" title="${title}">${rank}<span class="sym">${suit}</span></span>`;
+  }).join("") + "</span>";
+}
+
 function renderSpot(st) {
   const sp = st.spot || {}, t = st.table || {};
   const kv = document.getElementById("spotKv");
@@ -243,7 +265,19 @@ function renderSpot(st) {
   const rows = [];
   if (bl[1]) rows.push(["Blinds", `${bl[0]}/${bl[1]}` + (bl[2] ? ` (ante ${bl[2]})` : "")]);
   if (sp.type) rows.push(["Situation", ({ RFI: "First in (unopened)", VS_OPEN: "Facing an open", VS_SHOVE: "Facing an all-in",
-    VS_3BET: "Facing a 3-bet", LIMPED: "Facing limper(s)", WAITING: "Waiting", UNKNOWN: "Unknown" })[sp.type] || sp.type]);
+    VS_3BET: "Facing a 3-bet", LIMPED: "Facing limper(s)", WAITING: "Waiting", UNKNOWN: "Unknown",
+    POSTFLOP: `Postflop (${sp.street || "board out"})` })[sp.type] || sp.type]);
+  if (t.board) rows.push(["Board", boardHtml(t.board)]);
+  const hand = t.hand;
+  if (hand) {
+    const label = { preflop: "Preflop", flop: "Flop", turn: "Turn", river: "River" };
+    for (const ln of hand.lines) {
+      if (ln.text || ln.street === hand.street) rows.push([label[ln.street] || ln.street, ln.text || "–"]);
+    }
+    if (hand.finished) {
+      rows.push(["Hand", '<span class="sub">finished · next hand starts when new cards are dealt</span>']);
+    }
+  }
   if (sp.hero_pos) rows.push(["Position", `${sp.hero_pos} · ${sp.n_players}-handed`]);
   if (sp.eff_bb != null) rows.push(["Effective", `${sp.eff_bb} bb`]);
   if (sp.villain) rows.push(["Aggressor", `${sp.villain.pos} ${sp.villain.bet} bb` + (sp.villain.all_in ? " (all-in)" : "")]);
@@ -252,7 +286,9 @@ function renderSpot(st) {
   if (sp.blind_source) rows.push(["Blinds from", sp.blind_source]);
   kv.innerHTML = rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
   const notes = document.getElementById("notes");
-  notes.innerHTML = (sp.warnings || []).map(w => `<li class="warn">${w}</li>`).join("") +
+  const handNotes = (hand && hand.notes || []).map(n => `<li>Tracker: ${n}</li>`).join("") +
+    (hand && hand.actions.some(a => a.inferred) ? "<li>* inferred: not seen directly, deduced when the street closed</li>" : "");
+  notes.innerHTML = handNotes + (sp.warnings || []).map(w => `<li class="warn">${w}</li>`).join("") +
     (sp.notes || []).map(n => `<li>${n}</li>`).join("") +
     (st.override_errors || []).map(e => `<li class="warn">Range file: ${e}</li>`).join("") +
     (st.chart && st.chart.note ? `<li class="warn">${st.chart.note}</li>` : "");
@@ -277,6 +313,9 @@ function renderStatus(st) {
   document.getElementById("timing").textContent = st.parse_ms ?
     `read in ${st.parse_ms} ms` + (st.table && st.table.ocr_device ? ` · OCR on ${st.table.ocr_device.toUpperCase()}` : "") : "";
   document.getElementById("btnPause").textContent = st.paused ? "Resume" : "Pause";
+  const rec = document.getElementById("btnRecord");
+  rec.textContent = st.recording ? `■ Stop (${st.recording.frames})` : "Record";
+  rec.classList.toggle("primary", !!st.recording);
   renderGame(st.game);
 }
 
@@ -338,6 +377,13 @@ document.getElementById("btnRegion").onclick = async (ev) => {
   setTimeout(() => { b.textContent = "Select region"; b.disabled = false; }, 1500);
 };
 document.getElementById("btnPause").onclick = () => fetch("/api/pause", { method: "POST" });
+document.getElementById("btnRecord").onclick = async () => {
+  try {
+    const j = await (await fetch("/api/record", { method: "POST" })).json();
+    if (!j.recording && j.folder) document.getElementById("err").textContent =
+      `Saved ${j.frames} frames to ${j.folder}`;
+  } catch (e) { document.getElementById("err").textContent = "Record: server offline"; }
+};
 document.getElementById("btnFrame").onclick = (ev) => {
   const fr = document.getElementById("frame");
   const show = fr.style.display !== "block";

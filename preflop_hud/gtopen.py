@@ -173,8 +173,14 @@ def solve(n, stack, dead, limp, gtopen_dir, target_gap=0.02, max_iters=3000, chu
             t0 = time.time()
             srv.api("/api/preflop/solve", {"iterations": min(chunk, max_iters - st["iteration"]),
                                            "check_every": 25, "target_gap": target_gap})
-            time.sleep(2)
-            st = srv.api("/api/preflop/status")
+            # GTOpen reports GPU vs CPU only once it has set the solve up (~25 s for a big tree)
+            t_wait = time.time()
+            while True:
+                time.sleep(2)
+                st = srv.api("/api/preflop/status")
+                if (st["state"] != "running" or st.get("gpu") or st.get("gpu_note")
+                        or st.get("iteration", 0) > 0 or time.time() - t_wait > 300):
+                    break
             if st["state"] == "running" and not st.get("gpu") and not allow_cpu:
                 srv.api("/api/preflop/stop", {})
                 log(f"aborted: GTOpen fell back to the CPU ({st.get('gpu_note')}); a CPU solve this size won't finish")
@@ -471,12 +477,64 @@ class GtopenStore:
         return self._cache[path]
 
 
+def batch(n, stacks, dead, limp, gtopen_dir, game=None, target_gap=0.02, max_iters=3000, port=PORT,
+          keep_saves=False):
+    """Solve and export several grid stacks in turn. With limp=True a stack whose limp tree GTOpen
+    refuses (too big for memory) or can't keep on the GPU is solved without limps instead.
+    Stacks already exported are skipped, so a stopped batch picks up where it left off."""
+    import ctypes
+    if os.name == "nt":       # keep the PC from idle-sleeping while this process runs (no settings change)
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+    save_dir = os.path.join(gtopen_dir, "saves", "preflop")
+    os.makedirs(save_dir, exist_ok=True)
+    log_path = os.path.join(save_dir, f"batch_n{n}_{time.strftime('%Y%m%d-%H%M%S')}.log")
+
+    def log(msg):
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}"
+        print(line, flush=True)
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
+
+    def exported(lp):
+        return os.path.exists(os.path.join(OUT_DIR, game_name(n, s, dead, lp, game) + ".npz"))
+
+    log(f"batch: {n}-handed, stacks {stacks}, antes {dead}bb, limps {'on' if limp else 'off'}, "
+        f"{modes.describe(game)}")
+    for s in stacks:
+        if exported(limp) or (limp and exported(False)):
+            log(f"{s}bb: already exported, skipped")
+            continue
+        t0 = time.time()
+        tries = [True, False] if limp else [False]
+        for lp in tries:
+            try:
+                ok = solve(n, s, dead, lp, gtopen_dir, target_gap, max_iters, port=port, game=game)
+            except RuntimeError as e:
+                ok = False
+                log(f"{s}bb{' limps' if lp else ''}: {e}")
+            if ok:
+                path = export(n, s, dead, lp, gtopen_dir, port, game=game)
+                log(f"{s}bb{' limps' if lp else ''}: done in {(time.time() - t0) / 60:.0f} min -> {os.path.basename(path)}")
+                if not keep_saves:   # 2-4 GB each; the export has what the HUD uses (logs are kept)
+                    gtop = os.path.join(save_dir, game_name(n, s, dead, lp, game) + ".gtop")
+                    if os.path.exists(gtop):
+                        os.remove(gtop)
+                break
+            if lp:
+                log(f"{s}bb: limp tree refused or off the GPU: solving without limps")
+        else:
+            log(f"{s}bb: FAILED, see the solve log")
+    log("batch finished")
+    return log_path
+
+
 def main(argv=None):
     from .solver import SolverStore
     ap = argparse.ArgumentParser(prog="python -m preflop_hud.gtopen", description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["solve", "export", "compare"])
+    ap.add_argument("command", choices=["solve", "export", "compare", "batch"])
     ap.add_argument("--players", type=int, required=True)
-    ap.add_argument("--stack", type=int, required=True, help="stack in bb (a HUD grid depth)")
+    ap.add_argument("--stack", type=int, nargs="+", required=True,
+                    help="stack in bb (a HUD grid depth); batch takes several, solved in the order given")
     ap.add_argument("--ante-per-player", type=float, default=None,
                     help="ante in bb per player (default 0.125 in tournaments, 0 in cash)")
     ap.add_argument("--limp", action="store_true", help="allow open-limps and limping behind (much larger tree)")
@@ -489,17 +547,26 @@ def main(argv=None):
     ap.add_argument("--gtopen-dir")
     ap.add_argument("--port", type=int, default=PORT, help="port for the GTOpen server this command starts")
     ap.add_argument("--cpu", action="store_true", help="solve on the CPU (small games only)")
+    ap.add_argument("--keep-saves", action="store_true",
+                    help="batch: keep each GTOpen checkpoint (2-4 GB) after exporting it")
     a = ap.parse_args(argv)
     game = modes.normalize({"mode": a.mode, "icm_stage": a.icm_stage, "rake_pct": a.rake_pct,
                             "rake_cap": a.rake_cap})
     ante = a.ante_per_player if a.ante_per_player is not None else (0.0 if a.mode == "cash" else 0.125)
     dead = SolverStore.dead_key(ante * a.players)
+    if a.command != "batch":
+        if len(a.stack) != 1:
+            ap.error(f"{a.command} takes one --stack (batch takes several)")
+        a.stack = a.stack[0]
     if a.command == "compare":
         compare(a.players, a.stack, dead, a.limp, game)
         return 0
     gdir = find_gtopen_dir(a.gtopen_dir)
     if a.cpu:
         os.environ["SOLVER_GPU"] = "0"
+    if a.command == "batch":
+        batch(a.players, a.stack, dead, a.limp, gdir, game, a.target_gap, a.max_iters, a.port, a.keep_saves)
+        return 0
     if a.command == "solve":
         ok = solve(a.players, a.stack, dead, a.limp, gdir, a.target_gap, a.max_iters, port=a.port,
                    allow_cpu=a.cpu, game=game)

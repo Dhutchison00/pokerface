@@ -27,6 +27,7 @@ from . import reader as reader_mod
 from .reader import read_table, annotate
 from .spot import derive_spot
 from .strategy import Engine
+from .tracker import Tracker, observe
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -58,9 +59,13 @@ def _jsonable(o):
     return o
 
 
+NO_ADVICE = {"actions": [], "freqs": None, "approx": False, "title": "Recording · advice off",
+             "method": "No charts or advice while recording: the table is only read, tracked and saved"}
+
+
 def _signature(spot, hero_class):
     v = spot.get("villain") or {}
-    return json.dumps([spot.get("type"), spot.get("hero_pos"), round(spot.get("eff_bb") or 0, 1),
+    return json.dumps([spot.get("type"), spot.get("street"), spot.get("hero_pos"), round(spot.get("eff_bb") or 0, 1),
                        v.get("pos"), v.get("bet"), spot.get("n_players"), hero_class,
                        [p["pos"] for p in spot.get("behind", [])]])
 
@@ -90,6 +95,9 @@ class App:
         self._last_small = None
         self._grabber = None
         self.selecting = False
+        self.tracker = Tracker()             # the hand's action, rebuilt from every read
+        self.recording = None                # folder while recording frames for the tracker's tests
+        self._rec_n = 0
 
     # ------------------------------------------------------------ frame source
     def _frame(self):
@@ -116,7 +124,9 @@ class App:
             except Exception as e:
                 traceback.print_exc()
                 self._publish({"status": "error", "error": f"{type(e).__name__}: {e}"}, keep_chart=True)
-            time.sleep(max(0.05, self.interval - (time.time() - t0)))
+            # during a hand, read every 0.25s so quick bot actions land in separate frames
+            interval = min(self.interval, 0.25) if self.tracker.in_hand else self.interval
+            time.sleep(max(0.05, interval - (time.time() - t0)))
 
     def tick(self):
         img = self._frame()
@@ -153,6 +163,10 @@ class App:
         lay = self.cfg.get("layout")
         st = read_table(img, lay)
         spot = derive_spot(st)
+        obs = observe(st, spot)
+        hand = self.tracker.update(obs)      # every read, settled or not: bots can act between them
+        if self.recording:
+            self._record(img, obs, hand)
         hc = st.hero_cards or {}
         hero_class = None
         if hc.get("complete"):
@@ -172,7 +186,7 @@ class App:
                        "acting": s.acting, "pos": spot.get("positions", {}).get(str(s.idx))}
                       for s in st.seats],
             "hero_cards": hc, "hero_class": hero_class, "buttons": st.hero_buttons,
-            "error": st.error, "ocr_device": reader_mod.OCR_DEVICE,
+            "error": st.error, "ocr_device": reader_mod.OCR_DEVICE, "board": st.board, "hand": hand,
         }
         return {"spot": spot, "hc": hc, "hero_class": hero_class, "table": table,
                 "sig": _signature(spot, hero_class), "ms": int((time.time() - t0) * 1000)}
@@ -182,6 +196,14 @@ class App:
         self._last_data = data
         if data["sig"] == self._accepted and self.image is None and not force and not                 (self._chart_pending and time.time() - self._last_resolve > 2):
             self._publish({"status": "live", "table": data["table"], "parse_ms": data["ms"]}, keep_chart=True)
+            return
+        if self.recording:
+            # recording is advice-free: read, track and save the hand, but compute and show no
+            # chart, hand advice or solver output (so it can run on real games' tables)
+            self._accepted = data["sig"]
+            self._chart_pending = False
+            self._publish({"status": "live", "table": data["table"], "spot": spot, "chart": NO_ADVICE,
+                           "hero": None, "parse_ms": data["ms"]})
             return
         chart = self.overrides.find(spot) if spot.get("eff_bb") else None
         if chart is None:
@@ -210,6 +232,8 @@ class App:
                 new.pop("error", None)
             new.update(update)
             new["paused"] = self.paused
+            new["recording"] = {"folder": os.path.basename(self.recording), "frames": self._rec_n} \
+                if self.recording else None
             new["game"] = dict(self.engine.game, label=modes.describe(self.engine.game),
                                stages={k: v[0] for k, v in modes.ICM_STAGES.items()})
             new["region"] = self.cfg.get("region")
@@ -218,6 +242,35 @@ class App:
             self.version += 1
             new["version"] = self.version
             self.state = _jsonable(new)
+
+    # ------------------------------------------------------------ recorder
+    def toggle_recording(self):
+        """Start/stop saving every read (frame PNG + the tracker's view) to recordings/<time>/.
+        Replay with: python -m preflop_hud.tracker replay recordings/<time> [--reread]"""
+        if self.recording:
+            folder, self.recording = self.recording, None
+            res = {"recording": False, "folder": folder, "frames": self._rec_n}
+        else:
+            self.recording = os.path.join(ROOT, "recordings", time.strftime("%Y%m%d-%H%M%S"))
+            os.makedirs(self.recording, exist_ok=True)
+            self._rec_n = 0
+            res = {"recording": True, "folder": self.recording}
+        # advice goes off the moment recording starts, and comes back (re-solved) when it stops
+        self._accepted = None
+        if self.recording:
+            self._publish({"chart": NO_ADVICE, "hero": None}, keep_chart=True)
+        elif self._last_data is not None:
+            self._accept(self._last_data, force=True)
+        else:
+            self._publish({}, keep_chart=True)
+        return res
+
+    def _record(self, img, obs, hand):
+        self._rec_n += 1
+        base = os.path.join(self.recording, f"{self._rec_n:05d}")
+        cv2.imwrite(base + ".png", img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        with open(base + ".json", "w", encoding="utf-8") as f:
+            json.dump(_jsonable({"obs": obs, "hand": hand}), f)
 
     # ------------------------------------------------------------ game mode
     def set_game(self, update):
@@ -298,6 +351,8 @@ def make_handler(app: App):
                 app.paused = not app.paused
                 app._publish({"status": "paused" if app.paused else "live"}, keep_chart=True)
                 self._send(200, json.dumps({"paused": app.paused}).encode(), "application/json")
+            elif path == "/api/record":
+                self._send(200, json.dumps(app.toggle_recording()).encode(), "application/json")
             elif path == "/api/game":
                 try:
                     n = int(self.headers.get("Content-Length") or 0)

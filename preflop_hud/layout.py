@@ -14,6 +14,8 @@ DEFAULT_LAYOUT = {
     # HSV range of the felt (OpenCV H is 0..180)
     "felt_hsv_lo": [40, 60, 40],
     "felt_hsv_hi": [90, 255, 255],
+    # other table themes, tried as well (the largest blob wins): red, which wraps around hue 0
+    "felt_hsv_extra": [[[[0, 120, 50], [8, 255, 255]], [[172, 120, 50], [180, 255, 255]]]],
     "seats": [
         # stack: where the "19.7 BB" text sits.   bet: where that seat's bet chips land
         {"stack": [0.540, 1.100], "bet": [0.420, 0.680]},   # 0 hero, bottom centre
@@ -27,6 +29,8 @@ DEFAULT_LAYOUT = {
     ],
     # hero hole-card area
     "hero_cards": [0.44, 0.76, 0.61, 1.00],          # u0, v0, u1, v1
+    # community-card area (between the pot label and the bet chips)
+    "board": [0.22, 0.27, 0.78, 0.66],
     # card-back sample box relative to each seat's stack anchor (du0, dv0, du1, dv1)
     "card_back_box": [-0.035, -0.22, 0.035, -0.13],
     "card_back_min_frac": 0.15,   # measured ~0.33 with cards, 0.0 without

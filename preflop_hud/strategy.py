@@ -187,6 +187,10 @@ class Engine:
 
     def _solve_model(self, spot) -> dict:
         t = spot.get("type")
+        if t == "POSTFLOP":
+            return {"actions": [], "freqs": None, "approx": False,
+                    "title": f"Postflop · {spot.get('street', '')}",
+                    "method": "Preflop charts don't apply once the flop is out"}
         if t == "RFI":
             return self._rfi(spot)
         if t == "VS_SHOVE":

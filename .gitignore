@@ -9,6 +9,12 @@ data/solutions/
 # stay tracked; add a new one deliberately with `git add -f samples/<file>`.
 samples/*
 
+# GTOpen preflop chart exports (python -m preflop_hud.gtopen batch rebuilds them)
+data/gtopen/*
+
 # Python bytecode caches
 __pycache__/
 *.py[cod]
+
+# Frames saved by the HUD's Record button (hand-tracker test data)
+recordings/

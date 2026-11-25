@@ -50,6 +50,7 @@ read as (stack, bet, label, name, and so on). Use it first whenever a number loo
 | Seat state | `FOLD`, `SB`, `BB`, `SITTING OUT`, `ALL IN` labels, plus card-back detection |
 | Button | the SB/BB labels. Falls back to the white "D" disc |
 | Your cards | ranks read by OCR from an upscaled crop. Suited or offsuit comes from the colour of the rank glyph. In a four-colour deck (detected from the first blue or green card, or set `"four_color_deck": true` under `"layout"`) the same colour means suited. Otherwise red/red and black/black are told apart by the shape of the pip |
+| Board | white card faces in the middle of the felt. Ranks by OCR (with a single-glyph retry), suit from the rank's colour: red hearts, blue diamonds, green clubs, black spades. Shown in the Spot panel; display only for now |
 | Whose turn | the countdown number |
 
 Positions (UTG … BTN, SB, BB) are derived for 2–10 players. Players still to act before you are
@@ -66,7 +67,7 @@ orange for bets).
 
 Things the reader relies on (worth telling whoever builds the app):
 
-- A green felt (HSV hue 40–90; change `felt_hsv_lo` and `felt_hsv_hi` otherwise)
+- A green or red felt (green: HSV hue 40–90 in `felt_hsv_lo`/`felt_hsv_hi`; other themes in `felt_hsv_extra`)
 - The blinds as `SB/BB(ante)` text near a label containing "BLIND"
 - Stacks and bets as text (`12.5 BB` or chip counts). `SB`, `BB` and `FOLD` labels under the seat
 - Face-up hero cards with the rank in the top-left corner, coloured by suit, with the pip below it
@@ -214,6 +215,28 @@ to the read time. A full table read takes about 0.2 s on an RTX 5070 Ti against 
 - Lines like `No registered plugin EP device found for 'CUDAExecutionProvider'` at start-up are
   onnxruntime noise. Trust the `OCR device:` line.
 
+## Hand tracker and recording
+
+The Spot panel lists each street's action as the hand plays out (`BTN raise 2.5, SB fold, BB call 2.5 |
+BB check, BTN bet 1.8`). One frame doesn't show earlier action, so the tracker compares successive
+reads: bet chips growing are calls, bets or raises; FOLD and CHECK labels (or a seat's cards
+disappearing) are folds and checks; and a new board card closes the street. Bots can act faster
+than the screen is read, so the HUD reads every 0.25 s while you're in a hand, puts several actions
+seen in one frame in seat order, and marks with `*` the actions it only deduced when the street
+closed (a call swept into the pot together with the next card).
+
+**Record** (top of the page) saves every read, as the frame PNG plus the tracker's view, to
+`recordings/<time>/` until you click it again. **Advice is off while recording**: no chart, no
+hand advice and no solving, only reading, tracking and saving, so recording can run on other
+tables without giving advice. It comes back when you stop. Replay a recording through a fresh tracker with:
+
+```powershell
+.\.venv\Scripts\python -m preflop_hud.tracker replay recordings\<time>
+```
+
+Add `--reread` to read the saved frames again (after a reader change). Recordings are git-ignored;
+they're the test data for the tracker, and the basis for postflop solving next.
+
 ## Tournament or cash
 
 The **Tournament / Cash** switch at the top of the page picks the game type. It's saved in
@@ -253,6 +276,7 @@ cargo build --release -p server --features gpu
 | `python -m preflop_hud.gtopen solve --players 8 --stack 60 --limp` | Solve one grid point, saving a checkpoint every 100 iterations; rerun the same command to resume. Exports when done |
 | `python -m preflop_hud.gtopen export --players 8 --stack 60 --limp` | Export a finished save to `data/gtopen/` |
 | `python -m preflop_hud.gtopen compare --players 8 --stack 60 --limp` | Print every exported spot next to the HUD solver's |
+| `python -m preflop_hud.gtopen batch --players 8 --stack 25 21 18 15 30 --limp` | Solve and export several depths in turn; with `--limp`, a depth whose limp tree GTOpen refuses (or can't keep on the GPU) is solved without limps. Skips depths already exported, keeps the PC from idle-sleeping while it runs, and deletes each 2–4 GB checkpoint once exported (`--keep-saves` to keep them) |
 
 - `--stack` is one of the HUD's grid depths. Antes default to 0.125 bb per player in tournaments and
   0 in cash (`--ante-per-player`). A chart is used when the table size, grid stack and game type match
@@ -271,7 +295,7 @@ cargo build --release -p server --features gpu
 - **`DLL load failed ... filename or extension is too long`** when importing onnxruntime: the
   folder path is too deep for Windows. Move the project somewhere short (such as `C:\PreflopHUD`),
   or create the venv at a short path and run it from there.
-- **"Table felt not found"**: the region doesn't contain the table, or the felt isn't green. Adjust `felt_hsv_*`.
+- **"Table felt not found"**: the region doesn't contain the table, or the felt is neither green nor red. Add its HSV range to `felt_hsv_extra`.
 - **Wrong seat for a number**: open Show capture, then nudge that seat's `stack` or `bet` anchor in `config.json`.
 - **Region is offset on a scaled display**: the capture and the picker are both per-monitor DPI-aware.
   If it still drifts, re-select the region after changing display scaling.

@@ -110,6 +110,16 @@ def derive_spot(st) -> dict:
     if not (st.hero_cards and st.hero_cards.get("ranks")):
         spot["notes"].append("No hole cards visible for hero")
 
+    # --- the flop is out: preflop charts don't apply. (Its pot would otherwise read as preflop
+    # dead money and send the solver after a nonsense grid point.) A flop is always 3 cards, so a
+    # stray 1-2 card detection doesn't switch the charts off.
+    board = getattr(st, "board", None) or []
+    if len(board) >= 3:
+        street = {3: "flop", 4: "turn", 5: "river"}.get(len(board), "postflop")
+        spot.update(type="POSTFLOP", street=street, dead=0.0)
+        spot["notes"].append(f"Postflop ({street}): preflop charts don't apply")
+        return spot
+
     # --- classify the action so far
     raises, limpers, callers, pending, folded = [], [], [], [], []
     for seat in order:

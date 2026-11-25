@@ -281,6 +281,89 @@ low_box = reader_mod._suit_info(up, ((125, 122), (197, 243)), 3)
 assert low_box and low_box["pip"] is not None and low_box["color"] == "red", low_box
 print("low OCR box OK")
 
+# ------------------------------------------------------------ community cards
+board = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_43s_river.webp"))).board
+assert [(c["rank"], c["suit"]) for c in board] == [("T", "d"), ("T", "c"), ("9", "c"), ("5", "d")], board
+assert st.board == [], st.board                       # the reference screenshot is preflop
+print("board OK:", " ".join(c["rank"] + c["suit"] for c in board))
+
+# a board out means postflop: no preflop chart, no solver work, no pot read as preflop dead money
+st_turn = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_43s_river.webp")))
+sp_turn = derive_spot(st_turn)
+assert sp_turn["type"] == "POSTFLOP" and sp_turn["street"] == "turn" and sp_turn["dead"] == 0.0, sp_turn
+ch_turn = eng.solve(sp_turn)
+assert ch_turn["freqs"] is None and ch_turn["title"] == "Postflop · turn", ch_turn
+st_flop = copy.deepcopy(st_turn)
+st_flop.board = st_flop.board[:2]                      # a stray 1-2 card read doesn't switch charts off
+assert derive_spot(st_flop)["type"] != "POSTFLOP"
+print("postflop detection OK")
+
+# ------------------------------------------------------------ hole-card ranks: this app's tall Q, 2 vs 7
+q6 = cv2.imread(os.path.join(ROOT, "samples", "hero_q6s_utg.webp"))
+hq = read_table(q6).hero_cards
+assert hq["ranks"] == ["Q", "6"] and hq["suited"] is True and hq["suits"] == ["s", "s"], hq   # OCR alone: "n"/"?"
+# the same hand with a red Q and a blue 6: each card's colour comes from its own glyph -> offsuit
+fx, fy, fw, fh = reader_mod.find_felt(q6, reader_mod.DEFAULT_LAYOUT)
+ys = slice(int(fy + hv0 * fh), int(fy + hv1 * fh))
+xs = slice(int(fx + hu0 * fw), int(fx + hu1 * fw))
+crop = q6[ys, xs].copy()
+hsv_c = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+ink = (hsv_c[..., 1] < 90) & (hsv_c[..., 2] < 200)
+t = np.clip((200 - hsv_c[..., 2].astype(float)) / 160, 0, 1)[..., None]
+cols = np.arange(crop.shape[1])[None, :].repeat(crop.shape[0], 0)
+for m, colour in ((ink & (cols < 0.29 * crop.shape[1]), (45, 45, 205)), (ink & (cols >= 0.29 * crop.shape[1]), (200, 110, 30))):
+    crop[m] = (np.array([245.0] * 3) * (1 - t[m]) + np.array(colour, float) * t[m]).astype(np.uint8)
+rb = q6.copy()
+rb[ys, xs] = crop
+hrb = read_table(rb).hero_cards
+assert hrb["ranks"] == ["Q", "6"] and hrb["colors"] == ["red", "blue"] and hrb["suited"] is False, hrb
+# 2 vs 7: a 2 has a flat base, a 7 ends in a narrow stroke
+two = np.zeros((30, 20), bool)
+two[0:4, 2:18] = True
+two[26:30, 1:19] = True
+seven = np.zeros((30, 20), bool)
+seven[0:4, 1:19] = True
+for r in range(4, 30):
+    seven[r, max(0, 16 - r // 2):18 - r // 2] = True
+assert reader_mod._fix_2_7("7", two) == "2" and reader_mod._fix_2_7("2", seven) == "7"
+assert reader_mod._fix_2_7("K", two) == "K"
+# a real one: OCR reads the 2 as "7" (93%) and doesn't detect the red Q at all
+hq2 = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_qh2s_2read7.png"))).hero_cards
+assert hq2["ranks"] == ["Q", "2"] and hq2["suits"] == ["h", "s"] and hq2["suited"] is False, hq2
+# red A and 2 that OCR text detection doesn't see (it read "2" for the A, then "T"): found from the card faces
+reader_mod._seen_four_color = False
+ha2 = read_table(cv2.imread(os.path.join(ROOT, "samples", "hero_ah2h_red_rec.png"))).hero_cards
+assert ha2["ranks"] == ["A", "2"] and ha2["colors"] == ["red", "red"], ha2
+print("hole-card ranks OK: Q6s read, red/blue overlap offsuit, 2/7 by shape")
+
+# red ink straddles OpenCV's hue wrap (0..180): split red pixels plus a few anti-aliased in-between
+# hues used to give a median of ~81 (green) or ~95 (blue): a 2 of hearts read as clubs
+hsv_red = np.zeros((10, 10, 3), np.uint8)
+hsv_red[..., 1], hsv_red[..., 2] = 200, 180
+hsv_red[:5, :, 0] = 2
+hsv_red[5:9, :, 0] = 177
+hsv_red[9, :, 0] = [20, 30, 81, 95, 110, 120, 140, 150, 160, 170]
+assert reader_mod._ink_color(hsv_red, np.ones((10, 10), bool)) == "red"
+for hue, name in ((60, "green"), (110, "blue")):
+    hsv_c = hsv_red.copy()
+    hsv_c[..., 0] = hue
+    assert reader_mod._ink_color(hsv_c, np.ones((10, 10), bool)) == name
+print("red across the hue wrap OK")
+
+# ------------------------------------------------------------ red table theme
+red = img.copy()
+hsv = cv2.cvtColor(red, cv2.COLOR_BGR2HSV)
+lay = reader_mod.DEFAULT_LAYOUT
+green = cv2.inRange(hsv, tuple(lay["felt_hsv_lo"]), tuple(lay["felt_hsv_hi"])) > 0
+hsv[..., 0][green] = 2                                 # repaint the felt red
+hsv[..., 1][green] = np.maximum(hsv[..., 1][green], 150)
+red = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+assert reader_mod.find_felt(red, lay) is not None
+st_red = read_table(red)
+assert [s.stack for s in st_red.seats] == stacks, [s.stack for s in st_red.seats]
+assert st_red.hero_cards["ranks"] == ["J", "T"] and (st_red.sb, st_red.bb, st_red.ante) == (200, 400, 50)
+print("red felt OK")
+
 # ------------------------------------------------------------ live loop (change detection + confirmation)
 from preflop_hud import server  # noqa: E402
 
