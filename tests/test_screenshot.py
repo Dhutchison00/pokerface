@@ -41,12 +41,24 @@ print("screenshot parse OK:", spot["hero_pos"], spot["eff_bb"], "bb", spot["type
 eng = Engine()
 
 
+def solve(sp):
+    """eng.solve, waiting for a grid point that isn't cached yet. On a fresh clone the solver computes
+    it in the background (once: data/solutions/ keeps it) and the approximate model is shown meanwhile."""
+    import time
+    ch = eng.solve(sp)
+    t0 = time.time()
+    while ch.get("pending_solver") and time.time() - t0 < 600:
+        time.sleep(0.5)
+        ch = eng.solve(sp)
+    return ch
+
+
 def run(name, mutate, expect_type, check=None, solver=True):
     s = copy.deepcopy(st)
     mutate(s)
     sp = derive_spot(s)
     assert sp["type"] == expect_type, (name, sp["type"], sp.get("warnings"), sp.get("notes"))
-    ch = eng.solve(sp)
+    ch = solve(sp)
     assert bool(ch.get("solver")) == solver, (name, ch.get("method"), ch.get("note"))
     F = np.array(ch.get("freqs_raw") or ch["freqs"])
     if check:
@@ -197,7 +209,7 @@ for name, mut, typ, key in [
     assert sp["type"] == typ, (name, sp["type"], sp.get("warnings"), sp.get("notes"))
     k = SolvedCharts._key(sp)
     assert k == key, (name, k, key)
-    ch = eng.solve(sp)
+    ch = solve(sp)
     assert ch.get("solver"), (name, ch.get("method"), ch.get("note"))
     print(f"{name:24s} -> {k:18s} {ch['title']:34s} {ch['pct']}")
 

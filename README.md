@@ -31,7 +31,8 @@ assistance tools.
 2. The page opens at <http://127.0.0.1:8765/>.
 3. Click **Select region**. The screen freezes and dims. Drag a box around the **whole table**
    (all seats, the blinds header and the action buttons), then release. Press Esc to cancel.
-   The region is saved in `config.json`.
+   The region is saved in `config.json` (created on first use; it holds this machine's settings
+   and isn't tracked by git).
 4. Play. The capture runs every 0.5 s, and a full read of the table takes about 0.2 s on an NVIDIA
    GPU or 0.7–0.9 s on the CPU once OCR has warmed up (start-up takes about 2–3 s). See GPU OCR below. A new reading is applied once the screen
    holds still for one frame, or once two reads agree. The chart usually updates 1–2 s after an
@@ -203,6 +204,9 @@ preflop_hud/
   postflop.py      live heads-up advice, flop to river: each street solved by GTOpen from its start
   multiway.py      3-way pots: multiway preflop ranges, equity, the lean 3-way turn/river spots
   gtopen.py        GTOpen preflop solves, exports and the chart store
+  validate_multiway.py, validate_sparse.py
+                   offline checks of the 3-way shortcuts against full solves (need GTOpen)
+  rank_templates.py  card ranks by template matching: an alternative reader, not wired in
   strategy.py      chart dispatch + the approximate fallback model
   overrides.py     your range files
   equity.py        169x169 preflop equity table (Monte Carlo, cached in data/)
