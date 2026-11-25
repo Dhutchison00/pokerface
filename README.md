@@ -10,14 +10,24 @@ assistance tools.
 
 ## Quick start
 
-1. Install Python 3.11, then double-click `start.bat`. The first run creates `.venv` and installs
-   the packages. Or run these yourself:
+1. Install Python 3.11. On Windows, double-click `start.bat`. On macOS, open Terminal in the
+   project folder and run `./start.sh`. The first run creates `.venv` and installs the packages.
+   The macOS launcher uses CPU OCR; it requires `python3.11` on your PATH. If `./start.sh` is
+   not executable, run `chmod +x start.sh` first. You can pass options to it, for example
+   `./start.sh --port 9000`. If `uv` is available, the launcher uses it to create the
+   environment and install dependencies; otherwise it uses Python's `venv` and pip.
+
+   Or on Windows, run these yourself:
 
    ```powershell
    py -3.11 -m venv .venv
    .\.venv\Scripts\python -m pip install -r requirements.txt
    .\.venv\Scripts\python -m preflop_hud
    ```
+   On macOS, allow Terminal (or the app launching the script) access under System Settings >
+   Privacy & Security > Screen & System Audio Recording when prompted. The region picker also
+   requires a Python installation with Tkinter. For Homebrew Python 3.11, install it with
+   `brew install python-tk@3.11`.
 2. The page opens at <http://127.0.0.1:8765/>.
 3. Click **Select region**. The screen freezes and dims. Drag a box around the **whole table**
    (all seats, the blinds header and the action buttons), then release. Press Esc to cancel.
