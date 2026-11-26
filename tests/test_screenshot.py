@@ -49,6 +49,22 @@ assert spot["eff_bb"] == 19.7 and abs(spot["ante_bb"] - 0.125) < 1e-9
 assert [p["pos"] for p in spot["behind"]] == ["BTN", "SB", "BB"]
 print("screenshot parse OK:", spot["hero_pos"], spot["eff_bb"], "bb", spot["type"], spot["notes"])
 
+# a capture region that stops short of the right-hand seat's name plate (its stack sits right of the
+# felt): that seat can't be read, the table counts one player short, and the HUD has to say why
+assert not st.clipped_seats and not spot["warnings"], (st.clipped_seats, spot["warnings"])
+st_cut = read_table(img[:, :1465])
+assert st_cut.ok and st_cut.felt == st.felt, (st_cut.error, st_cut.felt, st.felt)
+assert st_cut.clipped_seats == [{"seat": 6, "edge": "right"}], st_cut.clipped_seats
+spot_cut = derive_spot(st_cut)
+assert not st_cut.seats[6].present and spot_cut["n_players"] == 7, spot_cut
+assert any("cuts off seat 6 (right edge)" in w for w in spot_cut["warnings"]), spot_cut["warnings"]
+# cut through the stack text only: the anchor is still (just) inside the frame, but nothing reads there
+st_part = read_table(img[:, :1540])
+assert st_part.seats[6].stack is None and st_part.clipped_seats == [{"seat": 6, "edge": "right"}], \
+    (st_part.seats[6], st_part.clipped_seats)
+assert not read_table(img[:, :1560]).clipped_seats      # the whole name plate is in: nothing to report
+print("clipped capture region OK:", spot_cut["warnings"][0])
+
 eng = Engine()
 
 

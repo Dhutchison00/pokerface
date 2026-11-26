@@ -47,4 +47,11 @@ DEFAULT_LAYOUT = {
     # max distance (in felt widths) for a text to belong to a seat
     "seat_radius": 0.085,
     "bet_radius": 0.14,
+    # a seat whose stack anchor is closer than this (in felt widths) to the edge of the captured frame,
+    # or beyond it, is reported as cut off by the capture region; the second, wider margin applies to
+    # a seat no stack was read at (its text is then partly out of frame). Measured: 0.09 or more on the
+    # HUD's own captures and 0.03 on a tight one with every name plate whole; -0.05 on one that lost
+    # the right-hand seat and 0.016 on one that lost only that seat's stack
+    "seat_edge_margin": 0.015,
+    "seat_edge_margin_unread": 0.025,
 }

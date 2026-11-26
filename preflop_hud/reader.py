@@ -176,6 +176,7 @@ class TableState:
     ocr_ms: int = 0
     texts: list = field(default_factory=list)  # for the debug overlay
     seat_layout: list | None = None            # the seat anchors this frame was read with
+    clipped_seats: list = field(default_factory=list)   # {seat, edge}: stack text outside the capture
 
     def to_dict(self):
         d = asdict(self)
@@ -903,6 +904,19 @@ def read_table(img, layout=None, ocr_result=None) -> TableState:
             if is_allin:
                 seat.labels.append("allin")
             t["used"] = f"stack{i}"
+
+    # ---- seats the capture region cuts off: a seat whose stack text lies outside the frame is never
+    # read, so the table counts one player short and the seats acting before it are named a position
+    # late. Past the edge (or on it) always counts; a stack-text half-width inside it counts when no
+    # stack was read there, as the text is then partly out of frame
+    img_h, img_w = img.shape[:2]
+    for i, (su, sv) in enumerate(seat_xy):
+        x, y = fx + su * fw, fy + sv * fh
+        gaps = {"left": x, "top": y, "right": img_w - x, "bottom": img_h - y}
+        edge = min(gaps, key=gaps.get)
+        limit = lay["seat_edge_margin"] if st.seats[i].stack is not None else lay["seat_edge_margin_unread"]
+        if gaps[edge] < limit * fw:
+            st.clipped_seats.append({"seat": i, "edge": edge})
 
     # ---- labels, names, timers
     for t in texts:
