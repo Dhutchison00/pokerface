@@ -28,6 +28,13 @@ def derive_spot(st) -> dict:
         return spot
     seats = st.seats
     n_seats = len(seats)
+    clipped = getattr(st, "clipped_seats", None) or []
+    if clipped:
+        which = ", ".join(f"{c['seat']} ({c['edge']} edge)" for c in clipped)
+        spot["warnings"].append(
+            f"Capture region cuts off seat{'s' if len(clipped) > 1 else ''} {which}: a player there can't be "
+            "read, so the player count and positions may be wrong. Select the region again with the "
+            "whole table in it, name plates included")
     hero = seats[0]
     if not hero.present:
         spot["warnings"].append("Hero seat (bottom centre) not found")

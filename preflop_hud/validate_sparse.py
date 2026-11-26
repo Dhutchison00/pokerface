@@ -278,10 +278,17 @@ def main(argv=None):
               f"{mean(n, 'secs'):7.1f}")
     nn = float(np.mean([r["no_narrowing"] for r in rows if r.get("no_narrowing") is not None]))
     print(f"  {'no narrowing':20s} {nn:8.4f}")
-    sp = f"sparse {mid}"
-    ok = (mean(sp, "range_dist") < min(mean("checked down", "range_dist"), nn)
-          and mean(sp, "play_dist") < mean("checked down", "play_dist")
-          and mean(f"sparse {a.sizes[-1]}", "range_dist") <= mean(f"sparse {a.sizes[0]}", "range_dist"))
+    # size by size: one size passing says little if the small trees, the ones worth having, don't
+    verdicts = {}
+    for k in a.sizes:
+        sp = f"sparse {k}"
+        verdicts[sp] = bool(mean(sp, "range_dist") < min(mean("checked down", "range_dist"), nn)
+                            and mean(sp, "play_dist") < mean("checked down", "play_dist"))
+        print(f"  {sp}: {'closer than' if verdicts[sp] else 'NOT closer than'} checked down and no narrowing")
+    sp = "every sparse size"
+    ok = all(verdicts.values()) and (mean(f"sparse {a.sizes[-1]}", "range_dist")
+                                     <= mean(f"sparse {a.sizes[0]}", "range_dist"))
+    report["by_size"] = verdicts
     report["summary"] = {n: {"range_dist": mean(n, "range_dist"), "play_dist": mean(n, "play_dist"),
                              "nodes": mean(n, "nodes"), "secs": mean(n, "secs")} for n in names}
     report["summary"]["no narrowing"] = {"range_dist": nn}

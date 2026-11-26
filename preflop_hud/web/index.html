@@ -5,167 +5,344 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Preflop HUD</title>
 <style>
+  /* Layout rule for this page: every panel has a size that depends on the window only, never on
+     what was just read. Text that doesn't fit is cut with an ellipsis (hover for the full text),
+     and lists that can grow (notes) scroll inside their own box. */
   :root {
-    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
-    --text: #e7e9ee; --muted: #8b93a3; --accent: #4fc3f7;
+    --bg: #0d0f13; --panel: #161920; --panel2: #1d212a; --line: #272c37; --line2: #363d4b;
+    --text: #e8eaef; --muted: #8a92a3; --faint: #596172; --accent: #4fc3f7;
     --allin: #8e1b2b; --raise: #e5534b; --call: #3fae5a; --check: #3fae5a; --fold: #3f6aa8;
-    --warn: #f0b429;
+    --warn: #f0b429; --cell: #232832; --gap: 14px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.4 "Segoe UI", system-ui, -apple-system, sans-serif; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px;
-    border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
-  .pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--panel2);
-    border: 1px solid var(--line); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
-  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 "Segoe UI", system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums; }
+  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  .clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+
+  /* ---------------------------------------------------------------- header */
+  header { flex: none; position: relative; z-index: 16; display: flex; flex-wrap: wrap; align-items: center;
+    gap: 8px 10px; padding: 9px var(--gap); border-bottom: 1px solid var(--line); background: var(--panel); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+  .pill { width: 116px; font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--muted); display: inline-flex; align-items: center; gap: 7px;
+    white-space: nowrap; overflow: hidden; }
+  .pill .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+    transition: background-color .25s, box-shadow .25s; }
   .pill.live .dot { background: #3fae5a; box-shadow: 0 0 6px #3fae5a; }
-  .pill.settling .dot { background: var(--warn); }
+  .pill.settling .dot { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
   .pill.error .dot, .pill.no_region .dot { background: var(--raise); }
-  .spacer { flex: 1; }
+  #timing { width: 178px; font-size: 12px; color: var(--faint); }
+  @media (max-width: 1340px) { #timing { display: none; } }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .seg button { border: 0; border-radius: 0; background: var(--panel2); color: var(--muted); }
   .seg button + button { border-left: 1px solid var(--line); }
   .seg button.on { background: #1c3b4d; color: var(--text); }
-  select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
-    padding: 5px 8px; font: inherit; font-size: 13px; }
+  /* tournament stage and the cash rake text share one slot, so switching modes moves nothing */
+  .modeslot { display: grid; width: 150px; align-items: center; }
+  .modeslot > * { grid-area: 1 / 1; min-width: 0; }
+  .modeslot .off { visibility: hidden; }
+  #rakeTxt { font-size: 12px; color: var(--muted); padding-left: 4px; }
+  select { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 8px; font: inherit; font-size: 13px; }
   button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
-    padding: 7px 12px; font: inherit; cursor: pointer; }
+    padding: 6px 12px; font: inherit; cursor: pointer; white-space: nowrap; transition: border-color .15s, background-color .15s; }
   button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .7; cursor: default; }
   button.primary { background: #1c3b4d; border-color: #2c6b8c; }
-  main { display: grid; grid-template-columns: minmax(320px, 680px) minmax(280px, 1fr); gap: 16px; padding: 16px;
-    max-width: 1280px; margin: 0 auto; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
-  .title { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
+  /* fixed widths: the labels change ("Pause"/"Resume", "■ Stop (123)") but the buttons don't */
+  #btnRegion { width: 126px; } #btnPause { width: 78px; } #btnRecord { width: 122px; } #btnFrame { width: 112px; }
+
+  /* ---------------------------------------------------------------- page frame */
+  .viewport { flex: 1 1 auto; min-height: 500px; padding: var(--gap); container-type: size; }
+  /* the chart column is as wide as the square grid that fits the window's height */
+  main { height: 100%; display: grid; gap: var(--gap);
+    grid-template-columns: clamp(340px, calc(100cqh - 92px), calc(100cqw - 354px)) minmax(0, 1fr); }
+  @container (min-width: 1114px) {
+    /* room for two columns of side panels: give them 640px before the chart takes the rest */
+    main { grid-template-columns: clamp(340px, min(calc(100cqh - 92px), max(460px, calc(100cqw - 654px))), 900px) minmax(0, 1fr); }
+  }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: var(--gap); min-width: 0; }
+  .lab { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
   .sub { color: var(--muted); font-size: 12px; }
-  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px; margin-left: 6px;
-    vertical-align: middle; border: 1px solid var(--line); }
+
+  /* ---------------------------------------------------------------- chart card */
+  #chartCard { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .chead { flex: none; height: 46px; }
+  .trow { display: flex; align-items: center; gap: 10px; }
+  .title { flex: 1 1 auto; min-width: 0; font-size: 18px; font-weight: 600; line-height: 24px; }
+  .mrow { display: flex; align-items: center; gap: 8px; height: 20px; margin-top: 2px; }
+  #method { flex: 0 1 auto; min-width: 0; }
+  #badge { flex: none; display: flex; }
+  .badge { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 7px; border-radius: 6px;
+    border: 1px solid var(--line); white-space: nowrap; }
   .badge.approx { color: var(--warn); border-color: #6b5313; }
   .badge.exact { color: #6fd08a; border-color: #2a5c37; }
   .badge.override { color: var(--accent); border-color: #2c6b8c; }
+  /* the grid and the postflop panel take turns in one box of a fixed size */
+  .stage { flex: 1 1 auto; min-height: 0; position: relative; container-type: size; display: grid; place-items: center; }
+  #grid { display: grid; grid-template-columns: repeat(13, 1fr); grid-template-rows: repeat(13, 1fr); gap: 2px;
+    width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); }
+  .cell { position: relative; border-radius: 3px; background: var(--cell); min-width: 0; min-height: 0; overflow: hidden; cursor: default; }
+  .cell .lbl { display: block; font-size: clamp(8px, 2.1cqmin, 14px); font-weight: 600; line-height: 1.15;
+    padding: .2em .32em; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
+  .cell.hero { outline: 3px solid #fff; outline-offset: -1px; z-index: 2; box-shadow: 0 0 14px rgba(255,255,255,.6); overflow: visible; }
+  .cell.empty { background: #1c2028; }
+  .cell.empty .lbl, .cell.unreached .lbl { color: #6a7385; text-shadow: none; }
+  .cell.unreached { background: #1a1e25; }
+  .legend { flex: none; height: 20px; display: flex; gap: 16px; overflow: hidden; white-space: nowrap; font-size: 13px; }
+  .legend .it { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .soft { animation: soft .18s ease-out; }
+  @keyframes soft { from { opacity: .7; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .soft { animation: none; } .pill .dot { transition: none; } }
 
-  #grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 2px; margin-top: 12px;
-    aspect-ratio: 1 / 1; width: 100%; }
-  .cell { position: relative; border-radius: 3px; overflow: hidden; background: #262b35;
-    display: flex; align-items: flex-start; justify-content: flex-start; cursor: default; }
-  .cell .bars { position: absolute; inset: 0; display: flex; }
-  .cell .bars span { height: 100%; }
-  .cell .lbl { position: relative; z-index: 1; font-size: clamp(8px, 1.35vw, 13px); font-weight: 600;
-    padding: 2px 3px; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
-  .cell.hero { outline: 3px solid #fff; outline-offset: -1px; z-index: 2; box-shadow: 0 0 14px rgba(255,255,255,.6); }
-  .cell.empty .bars { opacity: .25; }
-  .cell.unreached { background: #1b1f27; }
-  .cell.unreached .lbl { color: #4d5566; text-shadow: none; }
-
-  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
-  .legend .it { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-  .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
-
-  .hand { display: flex; align-items: center; gap: 14px; }
-  .pcards { display: flex; gap: 4px; }
-  .pc { width: 42px; height: 58px; border-radius: 6px; background: #f4f4f4; color: #111; font-weight: 700;
-    font-size: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
-  .pc.red { color: #c62828; } .pc.blue { color: #1565c0; } .pc.green { color: #2e7d32; }
-  .pc small { font-size: 18px; }
-  .advice { font-size: 22px; font-weight: 700; }
-  .freqbar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px; background: #262b35; }
-  .freqtxt { font-size: 12px; color: var(--muted); margin-top: 4px; }
-
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  tr.me td { color: var(--accent); font-weight: 600; }
-  tr.out td { color: #5d6575; }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; margin-top: 8px; }
-  .kv div:nth-child(odd) { color: var(--muted); }
-  /* board: card-like tiles; the rank in the suit's colour (red hearts, blue diamonds, black spades, green clubs) */
-  .board { display: inline-flex; gap: 4px; flex-wrap: wrap; }
-  .bcard { display: inline-flex; align-items: baseline; gap: 1px; min-width: 26px; justify-content: center;
-    padding: 1px 5px; border-radius: 4px; background: #f4f5f7; font-weight: 700; font-size: 14px; line-height: 1.3; }
-  .bcard .sym { font-size: 11px; }
-  .bcard.h { color: #d32f2f; } .bcard.d { color: #1565c0; } .bcard.s { color: #111; } .bcard.c { color: #1b873f; }
-  .bcard.unk { color: #8b93a3; }
-  .notes { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
-  .notes li.warn { color: var(--warn); }
-  #frame { width: 100%; border-radius: 8px; border: 1px solid var(--line); display: none; margin-top: 10px; }
-  .stack { display: flex; flex-direction: column; gap: 16px; }
-  #tip { position: fixed; pointer-events: none; background: #0b0d11; border: 1px solid var(--line);
-    padding: 6px 9px; border-radius: 8px; font-size: 12px; display: none; z-index: 20; white-space: nowrap; }
-  .err { color: var(--raise); font-size: 13px; margin-top: 8px; }
-  /* postflop advice */
-  #postflop { margin-top: 12px; }
-  #postflop .msg { font-size: 15px; margin: 6px 0 10px; }
-  #postflop .msg.wait { color: var(--muted); }
-  #postflop table td { vertical-align: middle; }
-  #postflop .bar { height: 10px; border-radius: 5px; background: #262b35; overflow: hidden; min-width: 30px; }
-  #postflop td:first-child { white-space: nowrap; }
-  @media (max-width: 560px) { #postflop .barcol { display: none; } }
-  .card { min-width: 0; }
-  .title { overflow-wrap: anywhere; }
+  /* postflop advice (shown in the stage instead of the grid) */
+  #postflop { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+  #postflop .pfmsg { flex: none; min-height: 24px; font-size: 16px; line-height: 24px; }
+  #postflop .pfmsg.wait { color: var(--muted); }
+  #postflop .pfbody { flex: none; }
+  #postflop .pffoot { margin-top: auto; flex: none; border-top: 1px solid var(--line); padding-top: 10px; }
+  #postflop table { table-layout: fixed; }
+  #postflop td, #postflop th { height: 32px; vertical-align: middle; }
+  #postflop td { font-size: 14px; }
+  #postflop col.c-bar { width: 34%; } #postflop col.c-num { width: 84px; } #postflop col.c-rng { width: 64px; }
+  #postflop .bar { height: 10px; border-radius: 5px; background: var(--cell); overflow: hidden; }
   #postflop .bar span { display: block; height: 100%; }
   #postflop tr.top td { font-weight: 700; }
   #postflop .num { text-align: right; white-space: nowrap; }
-  #postflop .eqline { font-size: 17px; margin: 4px 0 6px; }
+  #postflop .eqline { font-size: 17px; margin: 0 0 6px; }
+  @container (max-width: 430px) { #postflop col.c-bar { width: 0; } #postflop .barcol { display: none; } }
+
+  /* ---------------------------------------------------------------- side panels */
+  .side { min-width: 0; min-height: 0; overflow-y: auto; container: side / inline-size; }
+  .sidegrid { display: flex; flex-direction: column; gap: var(--gap); min-height: 100%; }
+  .cols, .col { display: contents; }
+  #heroCard, #spotCard, #tableCard { flex: none; }
+  #notesCard { flex: 1 1 124px; min-height: 124px; }
+  @container side (min-width: 600px) {
+    /* your hand across the top; the spot beside the table and notes */
+    .sidegrid { height: 100%; }
+    .cols { display: flex; gap: var(--gap); flex: 1 1 auto; min-height: 0; }
+    .col { display: flex; flex-direction: column; gap: var(--gap); flex: 1 1 0; min-width: 0; min-height: 0; }
+    .col:last-child { flex-grow: 1.25; }      /* the seat table needs the width more */
+    #spotCard { flex: 1 1 auto; }
+    /* the card is stretched here: preflop (the longest line) gets twice a later street's share */
+    .cols #lines { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(51px, 2fr) repeat(3, minmax(34px, 1fr)); }
+  }
+
+  /* your hand */
+  .hand { display: flex; align-items: center; gap: 14px; height: 58px; }
+  .pcards { flex: none; display: flex; gap: 5px; }
+  .pc { width: 42px; height: 58px; border-radius: 6px; background: #f4f4f4; color: #111; font-weight: 700;
+    font-size: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+  .pc.red { color: #c62828; } .pc.blue { color: #1565c0; } .pc.green { color: #2e7d32; }
+  .pc small { font-size: 18px; height: 18px; }
+  .pc.none { background: transparent; border: 1px dashed var(--line2); }
+  .handtxt { min-width: 0; flex: 1 1 auto; }
+  .advice { font-size: 22px; font-weight: 700; line-height: 30px; height: 30px; }
+  .advice .sub { font-size: 13px; font-weight: 500; line-height: 1; }
+  @container side (max-width: 440px) { .advice { font-size: 18px; } }
+  .freqbar { height: 10px; border-radius: 5px; margin-top: 12px; background: var(--cell); }
+  .freqtxt { font-size: 12px; line-height: 18px; height: 18px; color: var(--muted); margin-top: 4px; }
+  .freqtxt + .freqtxt { margin-top: 0; }
+  #heroFlag { color: var(--warn); }
+
+  /* spot */
+  #spotCard { container-type: inline-size; display: flex; flex-direction: column; }
+  .chd { display: flex; align-items: center; gap: 10px; height: 26px; }
+  .chd .sit { flex: 1 1 auto; min-width: 0; font-weight: 600; }
+  .board { display: flex; gap: 4px; }
+  /* board: card-like tiles; the rank in the suit's colour (red hearts, blue diamonds, black spades, green clubs) */
+  .bcard { display: inline-flex; align-items: baseline; justify-content: center; gap: 1px; width: 34px; height: 24px;
+    border-radius: 4px; background: #f4f5f7; font-weight: 700; font-size: 14px; line-height: 24px; }
+  .bcard .sym { font-size: 11px; }
+  .bcard.h { color: #d32f2f; } .bcard.d { color: #1565c0; } .bcard.s { color: #111; } .bcard.c { color: #1b873f; }
+  .bcard.unk { color: #8b93a3; }
+  .bcard.none { background: transparent; border: 1px dashed var(--line2); }
+  .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-top: 12px; }
+  @container (min-width: 470px) { .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .stat { min-width: 0; }
+  .stat .k { font-size: 11px; line-height: 14px; color: var(--muted); }
+  .stat .v { font-size: 14px; line-height: 19px; height: 19px; font-weight: 600; }
+  .stat .v.na { color: var(--faint); font-weight: 400; }
+  .lines { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column;
+    gap: 4px; flex: 1 1 auto; min-height: 0; }
+  .ln { position: relative; display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 8px; font-size: 13px; line-height: 17px; }
+  .ln .k { color: var(--muted); }
+  .ln.brd { align-items: center; height: 26px; }
+  #lines { display: grid; gap: 4px; grid-template-rows: 51px 34px 34px 34px; }
+  #lines .ln:first-child { --n: 3; }
+  /* each street keeps a set number of text lines (--n, from the row's height: see fitLines); a longer
+     line ends in an ellipsis (hover for all of it) */
+  .ln .v { position: absolute; left: 62px; right: 0; top: 0;      /* out of flow: the text never sizes its row */
+    height: calc(var(--n, 2) * 17px); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--n, 2); }
+  .ln .v.na { color: var(--faint); }
+
+  /* table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 0 6px; height: 25px; border-bottom: 1px solid var(--line); text-align: left;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  #seats { table-layout: fixed; margin-top: 6px; }
+  #seats col.c-pos { width: 46px; } #seats col.c-stack { width: 56px; } #seats col.c-bet { width: 50px; } #seats col.c-state { width: 76px; }
+  #seats .num { text-align: right; }
+  #seats tr:last-child td { border-bottom: 0; }
+  tr.me td { color: var(--accent); font-weight: 600; }
+  tr.out td, tr.gone td { color: var(--faint); }
+  .chip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 5px;
+    border: 1px solid var(--line2); color: var(--muted); }
+  .chip.act { color: var(--warn); border-color: #6b5313; }
+  .chip.allin { color: #ff8a80; border-color: #6e2a2a; }
+
+  /* notes: the one list that grows, so it scrolls inside its own box */
+  #notesCard { display: flex; flex-direction: column; }
+  .notes { flex: 1 1 0; min-height: 0; overflow-y: auto; margin: 8px 0 0; padding: 0 4px 0 18px; font-size: 12px;
+    line-height: 17px; color: var(--muted); }
+  .notes li { margin-bottom: 3px; }
+  .notes li.warn { color: var(--warn); }
+  .notes li.err { color: var(--raise); }
+  .notes li.none { list-style: none; margin-left: -18px; color: var(--faint); }
+
+  /* capture: over the page, so opening it moves nothing */
+  #capture { position: fixed; inset: 0; z-index: 15; display: grid; place-items: center; padding: 70px 24px 24px;
+    background: rgba(8, 10, 13, .88); cursor: zoom-out; }
+  #frame { max-width: 100%; max-height: 100%; min-height: 0; border-radius: 8px; border: 1px solid var(--line2); }
+  #tip { position: fixed; pointer-events: none; background: #0b0d11; border: 1px solid var(--line2);
+    padding: 6px 9px; border-radius: 8px; font-size: 12px; display: none; z-index: 20; white-space: nowrap;
+    box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+
+  /* ---------------------------------------------------------------- narrow windows: one column, the page scrolls */
+  @media (max-width: 899px) {
+    html { scrollbar-gutter: stable; }
+    html, body { height: auto; }
+    body { display: block; }
+    .viewport { container-type: inline-size; min-height: 0; }
+    main { height: auto; grid-template-columns: minmax(0, 1fr); }
+    .side, .sidegrid { display: contents; }
+    #spotCard, #tableCard, #notesCard { order: 1; }
+    #heroCard { order: -1; }
+    .stage { flex: none; width: min(100%, 78vh); aspect-ratio: 1 / 1; align-self: center; }
+    #notesCard { flex: none; height: 150px; }
+  }
+  @media (max-width: 599px) {
+    /* a long title gets a second line here (kept for every title, so the grid stays put) */
+    .chead { height: 70px; }
+    .trow { align-items: flex-start; height: 48px; }
+    .title { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  }
+  @media (min-width: 600px) and (max-width: 899px) {
+    /* a tall, narrow window (beside the table): the spot sits next to the seats, and the chart
+       shrinks so the whole page fits the window's height when it can */
+    .cols { display: flex; gap: var(--gap); }
+    .col { display: flex; flex-direction: column; gap: var(--gap); flex: 1 1 0; min-width: 0; }
+    .col:last-child { flex-grow: 1.25; }
+    #notesCard { flex: 1 1 124px; height: auto; }
+    .stage { width: clamp(380px, calc(100vh - 876px), 100%); }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Preflop HUD</h1>
-  <span id="status" class="pill"><span class="dot"></span><span id="statusTxt">connecting…</span></span>
-  <span class="sub" id="timing"></span>
-  <span class="spacer"></span>
-  <span class="seg" role="group" aria-label="Game type">
-    <button id="modeTour" title="Tournament: antes read from the pot; chip EV or an ICM stage">Tournament</button>
-    <button id="modeCash" title="Cash: rake on pots that see a flop, 2.5bb opens">Cash</button>
-  </span>
-  <select id="icmStage" title="Tournament stage. ICM charts need a GTOpen export for that stage; other spots show chip EV">
-    <option value="">Chip EV</option>
-  </select>
-  <span class="sub" id="rakeTxt"></span>
-  <button class="primary" id="btnRegion" title="Drag a box around the poker table">Select region</button>
-  <button id="btnPause">Pause</button>
-  <button id="btnRecord" title="Save every read (frame + tracked action) to recordings/. Advice is off while recording: no charts, no hand advice, no solving">Record</button>
-  <button id="btnFrame">Show capture</button>
+  <div class="brand">
+    <h1>Preflop HUD</h1>
+    <span id="status" class="pill"><span class="dot"></span><span id="statusTxt" class="clip">connecting…</span></span>
+    <span class="clip" id="timing"></span>
+  </div>
+  <div class="controls">
+    <span class="seg" role="group" aria-label="Game type">
+      <button id="modeTour" title="Tournament: antes read from the pot; chip EV or an ICM stage">Tournament</button>
+      <button id="modeCash" title="Cash: rake on pots that see a flop, 2.5bb opens">Cash</button>
+    </span>
+    <span class="modeslot">
+      <select id="icmStage" title="Tournament stage. ICM charts need a GTOpen export for that stage; other spots show chip EV">
+        <option value="">Chip EV</option>
+      </select>
+      <span class="clip off" id="rakeTxt"></span>
+    </span>
+    <button class="primary" id="btnRegion" title="Drag a box around the poker table">Select region</button>
+    <button id="btnPause">Pause</button>
+    <button id="btnRecord" title="Save every read (frame + tracked action) to recordings/. Advice is off while recording: no charts, no hand advice, no solving">Record</button>
+    <button id="btnFrame" title="The last frame with every OCR box labelled">Show capture</button>
+  </div>
 </header>
 
+<div class="viewport">
 <main>
-  <section class="card">
-    <div class="title" id="chartTitle">Waiting for a table…</div>
-    <div class="sub"><span id="method"></span><span id="badge"></span></div>
-    <div id="grid"></div>
+  <section class="card" id="chartCard">
+    <div class="chead">
+      <div class="trow"><div class="title clip" id="chartTitle">Waiting for a table…</div><span id="badge"></span></div>
+      <div class="mrow"><span class="sub clip" id="method"></span></div>
+    </div>
+    <div class="stage" id="stage">
+      <div id="grid"></div>
+      <div id="postflop" hidden></div>
+    </div>
     <div class="legend" id="legend"></div>
-    <div id="postflop"></div>
   </section>
 
-  <section class="stack">
-    <div class="card">
-      <div class="hand">
-        <div class="pcards" id="pcards"></div>
-        <div>
-          <div class="sub">Your hand</div>
-          <div class="advice" id="advice">–</div>
+  <section class="side">
+    <div class="sidegrid">
+        <div class="card" id="heroCard">
+          <div class="hand">
+            <div class="pcards" id="pcards"><div class="pc none"></div><div class="pc none"></div></div>
+            <div class="handtxt">
+              <div class="lab">Your hand</div>
+              <div class="advice clip" id="advice">–</div>
+            </div>
+          </div>
+          <div class="freqbar" id="heroBar"></div>
+          <div class="freqtxt clip" id="heroTxt"></div>
+          <div class="freqtxt clip" id="heroEv"></div>
+          <div class="freqtxt clip" id="heroFlag"></div>
+        </div>
+
+      <div class="cols">
+      <div class="col">
+        <div class="card" id="spotCard">
+          <div class="chd">
+            <span class="lab">Spot</span>
+            <span class="sit clip" id="spotSit"></span>
+          </div>
+          <div class="stats" id="stats"></div>
+          <div class="lines">
+            <div class="ln brd"><div class="k">Board</div><div class="board" id="board"></div></div>
+            <div id="lines">
+              <div class="ln"><div class="k">Preflop</div><div class="v na">–</div></div>
+              <div class="ln"><div class="k">Flop</div><div class="v na">–</div></div>
+              <div class="ln"><div class="k">Turn</div><div class="v na">–</div></div>
+              <div class="ln"><div class="k">River</div><div class="v na">–</div></div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="freqbar" id="heroBar"></div>
-      <div class="freqtxt" id="heroTxt"></div>
-    </div>
 
-    <div class="card">
-      <div class="title" style="font-size:15px">Spot</div>
-      <div class="kv" id="spotKv"></div>
-      <ul class="notes" id="notes"></ul>
-      <div class="err" id="err"></div>
-    </div>
+      <div class="col">
+        <div class="card" id="tableCard">
+          <div class="chd" style="height:16px"><span class="lab">Table</span><span class="sub" style="margin-left:auto">stacks and bets in bb</span></div>
+          <table id="seats">
+            <colgroup><col class="c-pos"><col><col class="c-stack"><col class="c-bet"><col class="c-state"></colgroup>
+            <thead><tr><th>Pos</th><th>Player</th><th class="num">Stack</th><th class="num">Bet</th><th>State</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
 
-    <div class="card">
-      <div class="title" style="font-size:15px">Table</div>
-      <table id="seats"><thead><tr><th>Pos</th><th>Player</th><th>Stack</th><th>Bet</th><th>State</th></tr></thead><tbody></tbody></table>
-      <img id="frame" alt="capture with OCR overlay">
+        <div class="card" id="notesCard">
+          <div class="lab">Notes</div>
+          <ul class="notes" id="notes"></ul>
+        </div>
+      </div>
+      </div>
     </div>
   </section>
 </main>
+</div>
+<div id="capture" hidden><img id="frame" alt="capture with OCR overlay"></div>
 <div id="tip"></div>
 
 <script>
@@ -176,18 +353,68 @@ for (let i = 0; i < 13; i++) for (let j = 0; j < 13; j++)
 const COLORS = { allin: "var(--allin)", raise: "var(--raise)", call: "var(--call)", check: "var(--check)", fold: "var(--fold)" };
 const LABELS = { allin: "All-in", raise: "Raise", call: "Call", check: "Check", fold: "Fold" };
 const SUIT = { s: "♠", h: "♥", d: "♦", c: "♣" };
+const SUIT_NAME = { h: "hearts", d: "diamonds", s: "spades", c: "clubs" };
+const STREETS = ["preflop", "flop", "turn", "river"];
 
-const grid = document.getElementById("grid");
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// The page is redrawn from every state the server publishes (several a second). These write to the
+// DOM only when the value really changed, so an unchanged panel isn't rebuilt, and `soft` fades a
+// changed one in rather than letting it pop.
+function setText(el, v) { v = v == null ? "" : String(v); if (el._v !== v) { el._v = v; el.textContent = v; } }
+function setHTML(el, v, soft) {
+  if (el._v === v) return false;
+  el._v = v; el.innerHTML = v;
+  if (soft) fade(el);
+  return true;
+}
+function setClass(el, v) { if (el.className !== v) el.className = v; }
+function setTitle(el, v) { if (el.title !== v) el.title = v; }
+function fade(el) { el.classList.remove("soft"); void el.offsetWidth; el.classList.add("soft"); }
+// text that may be cut with an ellipsis: the full text is in the tooltip
+function setClipped(el, v) { setText(el, v); setTitle(el, v == null ? "" : String(v)); }
+
+// a bar split by frequency, as one background: [[colour, share 0..1], ...]
+function split(parts) {
+  let acc = 0;
+  const stops = [];
+  for (const [c, f] of parts) {
+    if (!(f > 0)) continue;
+    const to = Math.min(1, acc + f);
+    stops.push(`${c} ${(acc * 100).toFixed(1)}% ${(to * 100).toFixed(1)}%`);
+    acc = to;
+  }
+  if (!stops.length) return "";
+  if (acc < 0.999) stops.push(`var(--cell) ${(acc * 100).toFixed(1)}% 100%`);
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+function setBg(el, v) { if (el._bg !== v) { el._bg = v; el.style.background = v; } }
+
+const grid = $("grid");
 const cells = NAMES.map((n, k) => {
   const c = document.createElement("div");
   c.className = "cell empty";
-  c.innerHTML = `<div class="bars"><span style="width:100%;background:#2c313c"></span></div><span class="lbl">${n}</span>`;
+  c.innerHTML = `<span class="lbl">${n}</span>`;
   c.dataset.k = k;
   grid.appendChild(c);
   return c;
 });
 
-let state = null, lastVersion = -1, lastChartKey = "";
+let state = null, lastVersion = -1, lastChartKey = "", seatCount = 8, flash = null;
+
+// How many text lines each street's row has room for. This follows the row's height, which the
+// window sets (never the text), so a long line fills the room there is and nothing moves.
+const lineRows = [...$("lines").children], lineEls = lineRows.map(r => r.querySelector(".v"));
+function fitLines() {
+  for (const row of lineRows) {
+    const n = Math.max(1, Math.floor(row.clientHeight / 17));
+    if (row._n !== n) { row._n = n; row.style.setProperty("--n", n); }
+  }
+}
+if (window.ResizeObserver) new ResizeObserver(fitLines).observe($("lines"));
+addEventListener("resize", fitLines);
+fitLines();
 
 function labelFor(chart, a) {
   // first in, "call" is a limp (the SB in the HUD's tree; any seat in a GTOpen game with limps)
@@ -197,38 +424,38 @@ function labelFor(chart, a) {
 
 const KIND_COLORS = { check: "var(--check)", call: "var(--call)", fold: "var(--fold)", bet: "var(--raise)", raise: "var(--raise)" };
 function kindColor(row) { return /^all-in/i.test(row.label) ? "var(--allin)" : (KIND_COLORS[row.kind] || "var(--muted)"); }
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-function renderPostflop(pf) {
-  const el = document.getElementById("postflop");
-  if (!pf) { el.innerHTML = ""; return; }
+function postflopHtml(pf) {
   const pr = pf.progress || {};
   const solve = pr.iteration ? `solved ${pr.iteration} iterations · ${(+pr.exploit_pct).toFixed(2)}% of the pot from equilibrium` +
     ` · ${pr.gpu ? "GPU" : "CPU"}${pr.secs != null ? ` · ${pr.secs}s` : ""}${pf.refining ? " · refining…" : ""}` : "";
-  let html = "";
   const a = pf.advice;
+  let msg = "", body = "";
   if (a) {
     const best = a.actions.reduce((m, r) => (r.freq > m.freq ? r : m), a.actions[0]);
-    html += `<table><thead><tr><th>Your ${esc(a.hand)}</th><th class="barcol"></th><th class="num">How often</th><th class="num">EV loss</th><th class="num" title="How often the whole range takes this action here">Range</th></tr></thead><tbody>`;
+    msg = `<div class="pfmsg${pf.message ? " wait" : ""}">${esc(pf.message || "")}</div>`;
+    body += '<table><colgroup><col><col class="c-bar"><col class="c-num"><col class="c-num"><col class="c-rng"></colgroup>' +
+      `<thead><tr><th>Your ${esc(a.hand)}</th><th class="barcol"></th><th class="num">How often</th><th class="num">EV loss</th>` +
+      '<th class="num" title="How often the whole range takes this action here">Range</th></tr></thead><tbody>';
     a.actions.forEach(r => {
-      html += `<tr class="${r === best ? "top" : ""}"><td>${esc(r.label)}</td>` +
-        `<td class="barcol" style="width:35%"><div class="bar"><span style="width:${(r.freq * 100).toFixed(1)}%;background:${kindColor(r)}"></span></div></td>` +
+      body += `<tr class="${r === best ? "top" : ""}"><td title="${esc(r.label)}">${esc(r.label)}</td>` +
+        `<td class="barcol"><div class="bar"><span style="width:${(r.freq * 100).toFixed(1)}%;background:${kindColor(r)}"></span></div></td>` +
         `<td class="num">${Math.round(r.freq * 100)}%</td>` +
         `<td class="num">${r.ev_loss == null ? "–" : r.ev_loss <= 0.005 ? "best" : "−" + r.ev_loss.toFixed(2) + " bb"}</td>` +
         `<td class="num">${Math.round(r.range_freq * 100)}%</td></tr>`;
     });
-    html += "</tbody></table>";
-    html += `<div class="sub" style="margin-top:6px">Equity ${a.equity == null ? "–" : Math.round(a.equity * 100) + "%"}` +
-      ` · EV loss: how much less each action wins than the best one</div>`;
+    body += "</tbody></table>";
+    body += `<div class="sub" style="margin-top:8px">Equity ${a.equity == null ? "–" : Math.round(a.equity * 100) + "%"}` +
+      " · EV loss: how much less each action wins than the best one</div>";
   } else {
-    const cls = pf.status === "solving" || pf.status === "waiting" ? "msg wait" : "msg";
-    html += `<div class="${cls}">${esc(pf.message || "")}</div>`;
+    const cls = pf.status === "solving" || pf.status === "waiting" ? "pfmsg wait" : "pfmsg";
+    msg = `<div class="${cls}">${esc(pf.message || "")}</div>`;
     const e = pf.equity;
     if (e && e.equity != null) {
       // no solver strategy here (3-way flops, bet multiway pots): your share of the pot at showdown
-      html += `<div class="eqline">Your ${esc(e.hand || "hand")}: <b>${Math.round(e.equity * 100)}%</b> equity ` +
+      body += `<div class="eqline">Your ${esc(e.hand || "hand")}: <b>${Math.round(e.equity * 100)}%</b> equity ` +
         `against ${e.players} player${e.players === 1 ? "" : "s"}</div>`;
-      if (e.to_call) html += `<div class="sub">To call ${e.to_call}bb into ${e.pot}bb you'd need ` +
+      if (e.to_call) body += `<div class="sub">To call ${e.to_call}bb into ${e.pot}bb you'd need ` +
         `${Math.round(e.need * 100)}% at showdown (more bets can still follow)</div>`;
     }
   }
@@ -236,159 +463,197 @@ function renderPostflop(pf) {
   if (pf.line) info.push(`Preflop: ${esc(pf.line)}`);
   if (pf.ranges) info.push(`Ranges: ${esc(pf.ranges)}`);
   if (solve) info.push(esc(solve));
-  if (info.length) html += `<div class="sub" style="margin-top:8px">${info.join("<br>")}</div>`;
-  if (pf.notes && pf.notes.length) html += `<ul class="notes">${pf.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>`;
-  el.innerHTML = html;
+  let foot = info.length ? `<div class="sub">${info.join("<br>")}</div>` : "";
+  if (pf.notes && pf.notes.length) foot += `<ul class="notes" style="overflow:visible">${pf.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>`;
+  return msg + `<div class="pfbody">${body}</div>` + (foot ? `<div class="pffoot">${foot}</div>` : "");
 }
 
 function renderChart(chart, hero) {
   const key = JSON.stringify([chart && chart.title, chart && chart.freqs, hero && hero.index, chart && chart.postflop]);
   if (key === lastChartKey) return;
   lastChartKey = key;
-  document.getElementById("chartTitle").textContent = chart ? chart.title : "No decision";
-  document.getElementById("method").textContent = chart ? chart.method : "";
-  const pf = chart && chart.postflop;
-  grid.style.display = pf ? "none" : "";
-  renderPostflop(pf);
-  const b = document.getElementById("badge");
-  b.innerHTML = !chart || !chart.freqs ? "" : chart.override ? '<span class="badge override">your ranges</span>'
+  setClipped($("chartTitle"), chart ? chart.title : "No decision");
+  setClipped($("method"), chart && chart.method !== "-" ? chart.method : "");
+  setHTML($("badge"), !chart || !chart.freqs ? "" : chart.override ? '<span class="badge override">your ranges</span>'
     : chart.source === "gtopen" ? '<span class="badge exact">GTOpen · learned flop values</span>'
     : chart.solver ? '<span class="badge exact">solver · postflop modelled</span>'
-    : chart.approx ? '<span class="badge approx">approximate</span>' : '<span class="badge exact">computed</span>';
-  const leg = document.getElementById("legend");
-  leg.innerHTML = "";
-  if (!chart || !chart.freqs) {
-    cells.forEach(c => { c.className = "cell empty"; c.querySelector(".bars").innerHTML = '<span style="width:100%;background:#2c313c"></span>'; });
-    return;
+    : chart.approx ? '<span class="badge approx">approximate</span>' : '<span class="badge exact">computed</span>');
+
+  // the stage holds either the grid or the postflop panel; its size is the same for both
+  const pf = chart && chart.postflop, pfEl = $("postflop");
+  const swapped = pfEl.hidden === !!pf;
+  grid.hidden = !!pf;
+  pfEl.hidden = !pf;
+  if (pf) {
+    // the solver's progress line changes several times a second: fade only when the panel itself appears
+    setHTML(pfEl, postflopHtml(pf));
+    if (swapped) fade(pfEl);
+  } else {
+    pfEl._v = null;
   }
-  chart.actions.forEach(a => {
-    leg.insertAdjacentHTML("beforeend",
-      `<span class="it"><span class="sw" style="background:${COLORS[a]}"></span>${labelFor(chart, a)} <b>${chart.pct[a]}%</b></span>`);
-  });
+
+  const has = !!(chart && chart.freqs);
+  setHTML($("legend"), !has ? "" : chart.actions.map(a =>
+    `<span class="it"><span class="sw" style="background:${COLORS[a]}"></span>${labelFor(chart, a)} <b>${chart.pct[a]}%</b></span>`).join(""));
+  let changed = swapped;
   cells.forEach((c, k) => {
-    const f = chart.freqs[k];
-    let html = "";
-    chart.actions.forEach((a, i) => { if (f[i] > 0) html += `<span style="width:${(f[i] * 100).toFixed(1)}%;background:${COLORS[a]}"></span>`; });
-    c.querySelector(".bars").innerHTML = html;
-    c.className = "cell" + (hero && hero.index === k ? " hero" : "") +
-      (chart.unreached && chart.unreached[k] ? " unreached" : "");
+    const f = has ? chart.freqs[k] : null;
+    const bg = f ? split(chart.actions.map((a, i) => [COLORS[a], f[i]])) : "";
+    if (c._bg !== bg) changed = true;
+    setBg(c, bg);
+    setClass(c, "cell" + (!has ? " empty" : "") + (has && hero && hero.index === k ? " hero" : "") +
+      (has && chart.unreached && chart.unreached[k] ? " unreached" : ""));
   });
+  if (changed && !pf) fade(grid);
+}
+
+function cardHtml(r, col, s) {
+  return `<div class="pc ${col}">${r === "T" ? "10" : esc(r)}<small>${s ? SUIT[s] : (col === "black" ? "♠/♣" : "")}</small></div>`;
 }
 
 function renderHero(st) {
   const t = st.table || {}, hc = t.hero_cards, hero = st.hero, chart = st.chart;
-  const pc = document.getElementById("pcards");
-  pc.innerHTML = "";
-  if (hc && hc.ranks && hc.ranks.length) {
-    hc.ranks.forEach((r, i) => {
-      const col = (hc.colors || [])[i] || "black";
-      const s = (hc.suits || [])[i];
-      pc.insertAdjacentHTML("beforeend",
-        `<div class="pc ${col}">${r === "T" ? "10" : r}<small>${s ? SUIT[s] : (col === "black" ? "♠/♣" : "")}</small></div>`);
-    });
-  }
-  const adv = document.getElementById("advice"), bar = document.getElementById("heroBar"), txt = document.getElementById("heroTxt");
-  bar.innerHTML = ""; txt.textContent = "";
+  // always two card slots, so the advice next to them never moves
+  const ranks = (hc && hc.ranks) || [];
+  setHTML($("pcards"), [0, 1].map(i => ranks[i]
+    ? cardHtml(ranks[i], (hc.colors || [])[i] || "black", (hc.suits || [])[i]) : '<div class="pc none"></div>').join(""));
+  const adv = $("advice"), bar = $("heroBar"), txt = $("heroTxt"), ev = $("heroEv");
+  // caveats that change how to read the advice: on their own line, next to it
+  const shown = hero && chart && chart.freqs && !(chart.postflop && chart.postflop.advice);
+  setClipped($("heroFlag"), !shown ? "" : [hero.unreached ? "This hand rarely gets here: frequencies are unreliable, go by EV" : "",
+    hero.suit_unsure ? "Suits unclear, assumed offsuit" : ""].filter(Boolean).join(" · "));
   const pa = chart && chart.postflop && chart.postflop.advice;
   if (pa) {
     const rows = pa.actions.filter(r => r.freq > 0.005).sort((x, y) => y.freq - x.freq);
     const top = rows[0];
-    adv.innerHTML = `${esc(pa.hand)}: <span style="color:${kindColor(top)}">${esc(top.label)}</span>` +
-      (top.freq < 0.995 ? ` <span class="sub">${Math.round(top.freq * 100)}%</span>` : "");
-    rows.forEach(r => bar.insertAdjacentHTML("beforeend", `<span style="width:${r.freq * 100}%;background:${kindColor(r)}"></span>`));
-    txt.textContent = rows.map(r => `${r.label} ${Math.round(r.freq * 100)}%`).join(" · ");
+    setHTML(adv, `${esc(pa.hand)}: <span style="color:${kindColor(top)}">${esc(top.label)}</span>` +
+      (top.freq < 0.995 ? ` <span class="sub">${Math.round(top.freq * 100)}%</span>` : ""), true);
+    setBg(bar, split(rows.map(r => [kindColor(r), r.freq])));
+    setClipped(txt, rows.map(r => `${r.label} ${Math.round(r.freq * 100)}%`).join(" · "));
+    setClipped(ev, pa.equity == null ? "" : `Equity ${Math.round(pa.equity * 100)}%`);
     return;
   }
   if (!hero || !chart || !chart.freqs) {
-    adv.textContent = t.hero_class ? t.hero_class : "–";
+    setHTML(adv, t.hero_class ? esc(t.hero_class) : "–", true);
+    setBg(bar, ""); setClipped(txt, ""); setClipped(ev, "");
     return;
   }
   const entries = chart.actions.map(a => [a, hero.freqs[a]]).filter(e => e[1] > 0);
   entries.sort((x, y) => y[1] - x[1]);
   const top = entries[0];
-  adv.innerHTML = `${hero.hand}: <span style="color:${COLORS[top[0]]}">${labelFor(chart, top[0])}</span>` +
-    (top[1] < 0.995 ? ` <span class="sub">${Math.round(top[1] * 100)}%</span>` : "");
-  chart.actions.forEach(a => { const f = hero.freqs[a]; if (f > 0) bar.insertAdjacentHTML("beforeend", `<span style="width:${f * 100}%;background:${COLORS[a]}"></span>`); });
-  const fmt = v => `${v > 0 ? "+" : ""}${v} bb`;
-  let evTxt = "";
-  if (hero.ev_actions) evTxt = " · EV " + chart.actions.map(a => `${labelFor(chart, a)} ${fmt(hero.ev_actions[a])}`).join(", ");
-  else if (hero.ev != null) evTxt = ` · EV ${fmt(hero.ev)}`;
-  txt.textContent = entries.map(([a, f]) => `${labelFor(chart, a)} ${Math.round(f * 100)}%`).join(" · ") + evTxt +
-    (hero.unreached ? " · this hand rarely gets here: frequencies are unreliable, go by EV" : "") +
-    (hero.suit_unsure ? " · suits unclear, assumed offsuit" : "");
+  setHTML(adv, `${esc(hero.hand)}: <span style="color:${COLORS[top[0]]}">${labelFor(chart, top[0])}</span>` +
+    (top[1] < 0.995 ? ` <span class="sub">${Math.round(top[1] * 100)}%</span>` : ""), true);
+  setBg(bar, split(chart.actions.map(a => [COLORS[a], hero.freqs[a]])));
+  const fmt = v => `${v > 0 ? "+" : ""}${v}`;
+  setClipped(txt, entries.map(([a, f]) => `${labelFor(chart, a)} ${Math.round(f * 100)}%`).join(" · "));
+  setClipped(ev, hero.ev_actions ? "EV in bb: " + chart.actions.map(a => `${labelFor(chart, a)} ${fmt(hero.ev_actions[a])}`).join(" · ")
+    : hero.ev != null ? `EV ${fmt(hero.ev)} bb` : "");
 }
 
-const SUIT_SYMBOL = { h: "♥", d: "♦", s: "♠", c: "♣" };
-const SUIT_NAME = { h: "hearts", d: "diamonds", s: "spades", c: "clubs" };
-
 function boardHtml(board) {
-  if (!board.length) return '<span class="sub">none (preflop)</span>';
-  return '<span class="board">' + board.map(c => {
+  // always five slots: the flop, turn and river fill them in
+  let html = "";
+  for (let i = 0; i < 5; i++) {
+    const c = board[i];
+    if (!c) { html += '<span class="bcard none"></span>'; continue; }
     const rank = c.rank === "T" ? "10" : (c.rank || "?");
-    const suit = SUIT_SYMBOL[c.suit] || "";
     const cls = c.suit && c.rank ? c.suit : (c.suit || "unk");
-    const title = `${rank} of ${SUIT_NAME[c.suit] || "unknown suit"}`;
-    return `<span class="bcard ${cls}" title="${title}">${rank}<span class="sym">${suit}</span></span>`;
-  }).join("") + "</span>";
+    html += `<span class="bcard ${cls}" title="${esc(rank)} of ${SUIT_NAME[c.suit] || "unknown suit"}">${esc(rank)}` +
+      `<span class="sym">${SUIT[c.suit] || ""}</span></span>`;
+  }
+  return html;
+}
+
+const SITUATION = { RFI: "First in (unopened)", VS_OPEN: "Facing an open", VS_SHOVE: "Facing an all-in",
+  VS_3BET: "Facing a 3-bet", LIMPED: "Facing limper(s)", WAITING: "Waiting", UNKNOWN: "Unknown" };
+
+function seatRow(s) {
+  if (!s || !s.present) return '<tr class="gone"><td>–</td><td>empty seat</td><td class="num"></td><td class="num"></td><td></td></tr>';
+  const out = s.labels.includes("fold") || s.labels.includes("sitting_out") || (!s.has_cards && s.idx !== 0);
+  // one chip per seat (the column has a fixed width): the most telling state wins, the rest is in the tooltip
+  const labels = s.labels.filter(l => l !== "sb" && l !== "bb");
+  const all = labels.map(l => l === "allin" ? "all-in" : l.replace(/_/g, " ")).concat(s.acting ? ["acting now"] : []).join(", ");
+  const first = ["allin", "all_in", "sitting_out", "fold"].find(l => labels.includes(l)) || labels[0];
+  const chip = s.acting ? '<span class="chip act">⏱ acting</span>'
+    : first === "allin" || first === "all_in" ? '<span class="chip allin">all-in</span>'
+    : first === "sitting_out" ? '<span class="chip">sitting out</span>'
+    : first ? `<span class="chip">${esc(first.replace(/_/g, " "))}</span>` : "";
+  const name = s.name || "(seat " + s.idx + ")";
+  return `<tr class="${s.idx === 0 ? "me" : out ? "out" : ""}"><td>${esc(s.pos || "?")}</td><td title="${esc(name)}">${esc(name)}</td>` +
+    `<td class="num">${s.stack != null ? s.stack : "?"}</td><td class="num">${s.bet ? s.bet : ""}</td><td title="${esc(all)}">${chip}</td></tr>`;
 }
 
 function renderSpot(st) {
-  const sp = st.spot || {}, t = st.table || {};
-  const kv = document.getElementById("spotKv");
+  const sp = st.spot || {}, t = st.table || {}, hand = t.hand, hero = st.hero;
   const bl = t.blinds || [];
-  const rows = [];
-  if (bl[1]) rows.push(["Blinds", `${bl[0]}/${bl[1]}` + (bl[2] ? ` (ante ${bl[2]})` : "")]);
-  if (sp.type) rows.push(["Situation", ({ RFI: "First in (unopened)", VS_OPEN: "Facing an open", VS_SHOVE: "Facing an all-in",
-    VS_3BET: "Facing a 3-bet", LIMPED: "Facing limper(s)", WAITING: "Waiting", UNKNOWN: "Unknown",
-    POSTFLOP: `Postflop (${sp.street || "board out"})` })[sp.type] || sp.type]);
-  if (t.board) rows.push(["Board", boardHtml(t.board)]);
-  const hand = t.hand;
-  if (hand) {
-    const label = { preflop: "Preflop", flop: "Flop", turn: "Turn", river: "River" };
-    for (const ln of hand.lines) {
-      if (ln.text || ln.street === hand.street) rows.push([label[ln.street] || ln.street, ln.text || "–"]);
-    }
-    if (hand.finished) {
-      rows.push(["Hand", '<span class="sub">finished · next hand starts when new cards are dealt</span>']);
-    }
-  }
-  if (sp.hero_pos) rows.push(["Position", `${sp.hero_pos} · ${sp.n_players}-handed`]);
-  if (sp.eff_bb != null) rows.push(["Effective", `${sp.eff_bb} bb`]);
-  if (sp.villain) rows.push(["Aggressor", `${sp.villain.pos} ${sp.villain.bet} bb` + (sp.villain.all_in ? " (all-in)" : "")]);
-  if (sp.to_call != null) rows.push(["To call", `${sp.to_call} bb`]);
-  if (sp.pot != null) rows.push(["Pot", `${sp.pot} bb` + (sp.ante_bb ? ` · ante ${sp.ante_bb} bb` : "")]);
-  if (sp.blind_source) rows.push(["Blinds from", sp.blind_source]);
-  kv.innerHTML = rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
-  const notes = document.getElementById("notes");
-  const handNotes = (hand && hand.notes || []).map(n => `<li>Tracker: ${n}</li>`).join("") +
-    (hand && hand.actions.some(a => a.inferred) ? "<li>* inferred: not seen directly, deduced when the street closed</li>" : "");
-  notes.innerHTML = handNotes + (sp.warnings || []).map(w => `<li class="warn">${w}</li>`).join("") +
-    (sp.notes || []).map(n => `<li>${n}</li>`).join("") +
-    (st.override_errors || []).map(e => `<li class="warn">Range file: ${e}</li>`).join("") +
-    (st.chart && st.chart.note ? `<li class="warn">${st.chart.note}</li>` : "");
-  document.getElementById("err").textContent = st.error || (t.error || "");
+  setClipped($("spotSit"), sp.type === "POSTFLOP" ? `Postflop (${sp.street || "board out"})` : (SITUATION[sp.type] || sp.type || ""));
+  setHTML($("board"), boardHtml(t.board || []));
 
-  const tb = document.querySelector("#seats tbody");
-  tb.innerHTML = (t.seats || []).filter(s => s.present).map(s => {
-    const out = s.labels.includes("fold") || s.labels.includes("sitting_out") || (!s.has_cards && s.idx !== 0);
-    const state = [s.labels.filter(l => l !== "sb" && l !== "bb").join(", "), s.acting ? "⏱ acting" : ""].filter(Boolean).join(" ");
-    return `<tr class="${s.idx === 0 ? "me" : out ? "out" : ""}"><td>${s.pos || "?"}</td><td>${s.name || "(seat " + s.idx + ")"}</td>` +
-      `<td>${s.stack != null ? s.stack + " bb" : "?"}</td><td>${s.bet ? s.bet + " bb" : ""}</td><td>${state}</td></tr>`;
-  }).join("");
+  // a fixed set of figures: one that doesn't apply shows a dash rather than leaving the list
+  const stats = [
+    ["Position", sp.hero_pos ? `${sp.hero_pos} · ${sp.n_players}-handed` : null],
+    ["Effective", sp.eff_bb != null ? `${sp.eff_bb} bb` : null],
+    ["Pot", sp.pot != null ? `${sp.pot} bb` : null],
+    ["To call", sp.to_call != null ? `${sp.to_call} bb` : null],
+    ["Aggressor", sp.villain ? `${sp.villain.pos} ${sp.villain.bet} bb` + (sp.villain.all_in ? " (all-in)" : "") : null],
+    ["Blinds", bl[1] ? `${bl[0]}/${bl[1]}` + (bl[2] ? ` (ante ${bl[2]})` : "") : null],
+    ["Ante", sp.ante_bb ? `${sp.ante_bb} bb` : null],
+    ["Blinds from", sp.blind_source || null],
+  ];
+  setHTML($("stats"), stats.map(([k, v]) => `<div class="stat"><div class="k">${k}</div>` +
+    (v == null ? '<div class="v na">–</div>' : `<div class="v clip" title="${esc(v)}">${esc(v)}</div>`) + "</div>").join(""));
+
+  // one row per street, always
+  const byStreet = {};
+  if (hand) for (const ln of hand.lines) byStreet[ln.street] = ln.text;
+  STREETS.forEach((s, i) => {
+    const v = byStreet[s], el = lineEls[i];
+    setClipped(el, v || "–");
+    setTitle(el, v || "");
+    setClass(el, v ? "v" : "v na");
+  });
+
+  const li = (cls, text) => `<li${cls ? ` class="${cls}"` : ""}>${esc(text)}</li>`;
+  const now = Date.now();
+  if (flash && flash.until < now) flash = null;
+  const err = st.error || t.error;
+  const notes =
+    (err ? li("err", err) : "") + (flash ? li(flash.cls, flash.text) : "") +
+    (sp.warnings || []).map(w => li("warn", w)).join("") +
+    (st.chart && st.chart.note ? li("warn", st.chart.note) : "") +
+    (st.override_errors || []).map(e => li("warn", "Range file: " + e)).join("") +
+    (hand && hand.finished ? li("", "Hand finished · next hand starts when new cards are dealt") : "") +
+    (hand && hand.notes || []).map(n => li("", "Tracker: " + n)).join("") +
+    (hand && hand.actions.some(a => a.inferred) ? li("", "* inferred: not seen directly, deduced when the street closed") : "") +
+    (sp.notes || []).map(n => li("", n)).join("");
+  setHTML($("notes"), notes || '<li class="none">Nothing to flag</li>');
+
+  // every seat keeps its row (an empty seat too), so the table is always the same height
+  const seats = t.seats && t.seats.length ? t.seats : null;
+  if (seats) seatCount = seats.length;
+  setHTML(document.querySelector("#seats tbody"),
+    seats ? seats.map(seatRow).join("") : Array.from({ length: seatCount }, () => seatRow(null)).join(""));
+}
+
+// a message from a button (not from the server): stays in Notes for a few seconds
+function say(text, cls) {
+  flash = { text, cls: cls || "", until: Date.now() + 8000 };
+  if (state) renderSpot(state);
 }
 
 function renderStatus(st) {
-  const p = document.getElementById("status");
   const s = st.paused ? "paused" : st.status;
-  p.className = "pill " + s;
-  document.getElementById("statusTxt").textContent =
-    ({ live: st.image_mode ? "image mode" : "live", settling: "reading…", paused: "paused", no_region: "no region",
-       error: "error", starting: "starting" })[s] || s;
-  document.getElementById("timing").textContent = st.parse_ms ?
-    `read in ${st.parse_ms} ms` + (st.table && st.table.ocr_device ? ` · OCR on ${st.table.ocr_device.toUpperCase()}` : "") : "";
-  document.getElementById("btnPause").textContent = st.paused ? "Resume" : "Pause";
-  const rec = document.getElementById("btnRecord");
-  rec.textContent = st.recording ? `■ Stop (${st.recording.frames})` : "Record";
+  const live = st.image_mode ? "image mode" : "live";
+  // a read still being confirmed turns the dot amber; the label stays put
+  setClass($("status"), "pill " + s);
+  setText($("statusTxt"), ({ live, settling: live, paused: "paused", no_region: "no region",
+    error: "error", starting: "starting" })[s] || s);
+  setTitle($("status"), s === "settling" ? "Reading a change on the table…" : "");
+  setClipped($("timing"), st.parse_ms ?
+    `read in ${st.parse_ms} ms` + (st.table && st.table.ocr_device ? ` · OCR on ${st.table.ocr_device.toUpperCase()}` : "") : "");
+  setText($("btnPause"), st.paused ? "Resume" : "Pause");
+  const rec = $("btnRecord");
+  setText(rec, st.recording ? `■ Stop (${st.recording.frames})` : "Record");
   rec.classList.toggle("primary", !!st.recording);
   renderGame(st.game);
 }
@@ -396,15 +661,16 @@ function renderStatus(st) {
 function renderGame(g) {
   if (!g) return;
   const cash = g.mode === "cash";
-  document.getElementById("modeTour").classList.toggle("on", !cash);
-  document.getElementById("modeCash").classList.toggle("on", cash);
-  const sel = document.getElementById("icmStage");
+  $("modeTour").classList.toggle("on", !cash);
+  $("modeCash").classList.toggle("on", cash);
+  const sel = $("icmStage");
   if (sel.options.length === 1 && g.stages) {
     for (const [id, label] of Object.entries(g.stages)) sel.add(new Option("ICM · " + label, id));
   }
-  sel.style.display = cash ? "none" : "";
-  sel.value = g.icm_stage || "";
-  document.getElementById("rakeTxt").textContent = cash ? `${g.rake_pct}% rake, ${g.rake_cap}bb cap` : "";
+  sel.classList.toggle("off", cash);
+  $("rakeTxt").classList.toggle("off", !cash);
+  if (document.activeElement !== sel) sel.value = g.icm_stage || "";
+  setClipped($("rakeTxt"), cash ? `${g.rake_pct}% rake, ${g.rake_cap}bb cap` : "");
 }
 
 async function setGame(update) {
@@ -412,62 +678,67 @@ async function setGame(update) {
     const r = await fetch("/api/game", { method: "POST", headers: { "Content-Type": "application/json" },
                                          body: JSON.stringify(update) });
     const j = await r.json();
-    if (!j.ok) document.getElementById("err").textContent = "Game type: " + j.error;
-  } catch (e) { document.getElementById("err").textContent = "Game type: server offline"; }
+    if (!j.ok) say("Game type: " + j.error, "err");
+  } catch (e) { say("Game type: server offline", "err"); }
 }
-document.getElementById("modeTour").onclick = () => setGame({ mode: "tournament" });
-document.getElementById("modeCash").onclick = () => setGame({ mode: "cash" });
-document.getElementById("icmStage").onchange = (ev) => setGame({ icm_stage: ev.target.value || null });
+$("modeTour").onclick = () => setGame({ mode: "tournament" });
+$("modeCash").onclick = () => setGame({ mode: "cash" });
+$("icmStage").onchange = (ev) => { ev.target.blur(); setGame({ icm_stage: ev.target.value || null }); };
+
+function render(st) {
+  state = st;
+  renderStatus(st);
+  renderChart(st.chart, st.hero);
+  renderHero(st);
+  renderSpot(st);
+}
 
 async function poll() {
   try {
     const r = await fetch("/api/state", { cache: "no-store" });
     const st = await r.json();
     if (st.version !== lastVersion) {
-      lastVersion = st.version; state = st;
-      renderStatus(st);
-      renderChart(st.chart, st.hero);
-      renderHero(st);
-      renderSpot(st);
-      const fr = document.getElementById("frame");
-      if (fr.style.display === "block") fr.src = "/api/frame.jpg?v=" + st.version;
+      lastVersion = st.version;
+      render(st);
+      if (!$("capture").hidden) $("frame").src = "/api/frame.jpg?v=" + st.version;
     }
   } catch (e) {
-    document.getElementById("statusTxt").textContent = "server offline";
-    document.getElementById("status").className = "pill error";
+    setText($("statusTxt"), "server offline");
+    setClass($("status"), "pill error");
   }
   setTimeout(poll, 400);
 }
+renderSpot({});
 poll();
 
-document.getElementById("btnRegion").onclick = async (ev) => {
-  const b = ev.target; b.disabled = true; b.textContent = "Drag on screen…";
+$("btnRegion").onclick = async (ev) => {
+  const b = ev.target; b.disabled = true; b.textContent = "Drag a box…";
   try {
     const r = await fetch("/api/select-region", { method: "POST" });
     const j = await r.json();
     b.textContent = j.ok ? "Region saved ✓" : j.error ? "Picker failed" : "Cancelled";
-    if (j.error) document.getElementById("err").textContent = "Region picker: " + j.error;
+    if (j.error) say("Region picker: " + j.error, "err");
   } catch (e) { b.textContent = "Failed"; }
   setTimeout(() => { b.textContent = "Select region"; b.disabled = false; }, 1500);
 };
-document.getElementById("btnPause").onclick = () => fetch("/api/pause", { method: "POST" });
-document.getElementById("btnRecord").onclick = async () => {
+$("btnPause").onclick = () => fetch("/api/pause", { method: "POST" });
+$("btnRecord").onclick = async () => {
   try {
     const j = await (await fetch("/api/record", { method: "POST" })).json();
-    if (!j.recording && j.folder) document.getElementById("err").textContent =
-      `Saved ${j.frames} frames to ${j.folder}`;
-  } catch (e) { document.getElementById("err").textContent = "Record: server offline"; }
+    if (!j.recording && j.folder) say(`Saved ${j.frames} frames to ${j.folder}`);
+  } catch (e) { say("Record: server offline", "err"); }
 };
-document.getElementById("btnFrame").onclick = (ev) => {
-  const fr = document.getElementById("frame");
-  const show = fr.style.display !== "block";
-  fr.style.display = show ? "block" : "none";
-  ev.target.textContent = show ? "Hide capture" : "Show capture";
-  if (show) fr.src = "/api/frame.jpg?v=" + Date.now();
-};
+function showCapture(show) {
+  $("capture").hidden = !show;
+  $("btnFrame").textContent = show ? "Hide capture" : "Show capture";
+  if (show) $("frame").src = "/api/frame.jpg?v=" + Date.now();
+}
+$("btnFrame").onclick = () => showCapture($("capture").hidden);
+$("capture").onclick = () => showCapture(false);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("capture").hidden) showCapture(false); });
 
 // tooltip
-const tip = document.getElementById("tip");
+const tip = $("tip");
 grid.addEventListener("mousemove", e => {
   const c = e.target.closest(".cell");
   if (!c || !state || !state.chart || !state.chart.freqs) { tip.style.display = "none"; return; }
@@ -476,8 +747,10 @@ grid.addEventListener("mousemove", e => {
   if (ch.ev_actions) s += "<br>EV " + ch.actions.map((a, i) => `${labelFor(ch, a)} ${ch.ev_actions[k][i] > 0 ? "+" : ""}${ch.ev_actions[k][i]}`).join(" · ") + " bb";
   else if (ch.ev && ch.ev[k] != null) s += `<br>EV ${ch.ev[k] > 0 ? "+" : ""}${ch.ev[k]} bb`;
   if (ch.unreached && ch.unreached[k]) s += "<br><i>rarely reaches this spot</i>";
-  tip.innerHTML = s; tip.style.display = "block";
-  tip.style.left = Math.min(e.clientX + 14, innerWidth - 220) + "px"; tip.style.top = (e.clientY + 14) + "px";
+  setHTML(tip, s); tip.style.display = "block";
+  // keep it inside the window
+  tip.style.left = Math.max(4, Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8)) + "px";
+  tip.style.top = Math.max(4, Math.min(e.clientY + 14, innerHeight - tip.offsetHeight - 8)) + "px";
 });
 grid.addEventListener("mouseleave", () => tip.style.display = "none");
 </script>

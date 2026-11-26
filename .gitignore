@@ -24,3 +24,6 @@ config.json
 
 # Reports written by validate_multiway / validate_sparse
 data/validation/
+
+# Solved turns generated for the value-net pilot (python -m preflop_hud.pilot_data)
+data/pilot/
